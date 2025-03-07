@@ -4,3 +4,4 @@ datasets
 experiments
 results
 wandb
+credentials.py

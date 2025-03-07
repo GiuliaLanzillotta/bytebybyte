@@ -1,3 +1,4 @@
+import logging
 import os
 import sys
 
@@ -17,7 +18,7 @@ import torch.nn as nn
 from torch.utils.data.dataloader import DataLoader
 from datetime import datetime
 import pprint
-from hyperparameters import *
+from hyperparameters import agent_hyperparameters
 import argparse
 import random
 import string
@@ -49,6 +50,7 @@ parser.add_argument('--task_sequence', type=int, required=False, nargs='+', help
 parser.add_argument('--split_type', type=str, required=False, default="chunk", choices=['chunks', 'classes'], help='Type of data split in split experiments (string)')
 # agent-specific arguments 
 parser.add_argument('--network_name', type=str, required=True, help='Name of the network used (string)')
+parser.add_argument('--multihead', action='store_true', help='Flag to use multihead network')
 parser.add_argument('--agent_type', type=str, required=True, choices=['base','regularization','replay'], help='Type of the agent (string)')
 
 # Parse the arguments
@@ -67,6 +69,7 @@ if len(steps_per_task)<number_tasks:
 agent_type = args.agent_type
 checkpoint_freq = args.checkpoint_freq
 split_type = args.split_type
+multihead = args.multihead
 
 
 # Set random seed for reproducibility
@@ -83,7 +86,8 @@ env, environment_name = get_environment_from_name(environment_name, args)
 env_names = env.task_names # extracting task names
 batches_eval = env.batches_eval
 eval_criterion = env.criterion
-num_classes_per_task = env.num_classes
+num_classes_per_task = env.num_classes_per_task 
+num_classes_total = env.num_classes
 # taking care of task ordering ---
 default_task_ordering = list(range(number_tasks))
 if args.random_order: 
@@ -94,10 +98,11 @@ else:
           ordering = args.task_sequence
     else: ordering = default_task_ordering
 env.order_task_list(ordering)
+
 # --- 
 
 # configs setup 
-experiment_name =  environment_name+"_"+network_name+"_"+agent_type
+experiment_name =  environment_name+"_"+network_name+"_"+agent_type+("_multihead" if multihead else "_singlehead")
 timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
 experiment_config = {
     "exp_id": args.exp_id,
@@ -109,11 +114,14 @@ experiment_config = {
     "ordering" : env.ordered_task_names,
     "environment": env.world_name,
     "agent_type":agent_type, 
-    "num_classes_per_task":num_classes_per_task
+    "num_classes_per_task":num_classes_per_task,
+    "num_classes_total":num_classes_total,
+    "multihead": multihead
 }
 
 experiment_duration = sum(experiment_config['steps_per_task'])  # Total number of update steps
 experiment_config['experiment_duration'] = experiment_duration
+
 
 print(f"Experiment {experiment_name} started : {timestamp}")
 pprint.pprint(experiment_config)
@@ -129,7 +137,6 @@ agent = agent_class(device,  **experiment_config, **hp_dict)
 agent_config = agent.config # collect the filled config (with all the agent- and experiment-related info)
 
 # Logger initialized
-#todo: check
 experiment_logger = ExperimentLogger(args.exp_id, timestamp, experiment_name, log_to_file=False, external_json_file=LOG_FILE, log_wandb=True, wandb_project=args.wandb_project, config=agent_config)
 
 # Training loop
@@ -140,15 +147,15 @@ for current_task, steps in enumerate(experiment_config['steps_per_task']):
     logging.info(f"\n Training on task {current_env_name} ")
 
     # initializing task objective and training data iterator
-    #train_data = env.init_multi_task(number_of_tasks=current_task+1, train=True)
-    train_data = env.init_single_task(task_number=current_task, train=True)
+    train_data = env.init_multi_task(number_of_tasks=current_task+1, train=True)
+    #train_data = env.init_single_task(task_number=current_task, train=True)
     train_data_iterator = iter(DataLoader(train_data, batch_size=agent_config['batch_size'], shuffle=True, num_workers=NUM_WORKERS))
     # initialize training-time evaluation data 
     test_data = env.init_single_task(task_number=current_task, train=False) # same test data for both agents
     test_data_iterator = iter(DataLoader(test_data, batch_size=128, shuffle=True, num_workers=NUM_WORKERS)) 
 
     #reset agent optimizer before starting the new task 
-    if current_task > 0: agent.reset_optimizer()
+    if current_task > 0: agent.reset_optimizer(task=current_task)
 
     for step in range(steps): 
         #checkpoint saving
@@ -156,11 +163,11 @@ for current_task, steps in enumerate(experiment_config['steps_per_task']):
             experiment_logger.save_checkpoint(agent, current_task)
 
         agent.ready_train() 
-        try: train_loss, train_error = agent.update_one_step(train_data_iterator)
+        try: train_loss, train_error = agent.update_one_step(train_data_iterator, current_task)
         except StopIteration: 
                 # re-initialise train iterator
                 train_data_iterator = iter(DataLoader(train_data, batch_size=agent_config['batch_size'], shuffle=True, num_workers=NUM_WORKERS))
-                train_loss, train_error = agent.update_one_step(train_data_iterator)
+                train_loss, train_error = agent.update_one_step(train_data_iterator, current_task)
         
 
         # logging and evaluation
@@ -171,11 +178,11 @@ for current_task, steps in enumerate(experiment_config['steps_per_task']):
 
         if t % EVAL_EVERY == 0:
             try: 
-                eval_res = evaluate_agent_task(batches_eval, agent, test_data_iterator, eval_criterion)
+                eval_res = evaluate_agent_task(batches_eval, agent, test_data_iterator, eval_criterion, ntasks_observed=current_task)
             except StopIteration: 
                 # re-initialise test iterator
                 test_data_iterator = iter(DataLoader(test_data, batch_size=128, shuffle=True, num_workers=NUM_WORKERS)) 
-                eval_res = evaluate_agent_task(batches_eval, agent, test_data_iterator, eval_criterion)
+                eval_res = evaluate_agent_task(batches_eval, agent, test_data_iterator, eval_criterion, ntasks_observed=current_task)
             res.update(eval_res)
             experiment_logger.log(res, t)
         
@@ -183,7 +190,7 @@ for current_task, steps in enumerate(experiment_config['steps_per_task']):
 
     #TODO do end of task evaluations 
     # evaluate performance on all other tasks (forward and backward transfer)
-    res_env = evaluate_agent_all_tasks_env(batches_eval, agent, env, train=False)
+    res_env = evaluate_agent_all_tasks_env(batches_eval, agent, env, train=False, ntasks_observed=current_task)
     experiment_logger.log_named_metrics(res_env, "transfer", current_task)
 
 #checkpoint saving
@@ -193,7 +200,7 @@ if checkpoint_freq>0:
 logging.info("Training completed")
 
 # do end of task evaluations 
-res_env = evaluate_agent_all_tasks_env(batches_eval, agent, env, train=False)
+res_env = evaluate_agent_all_tasks_env(batches_eval, agent, env, train=False, ntasks_observed=-1)
 experiment_logger.log_named_metrics(res_env, "transfer", current_task)
 
 #produce final metrics and log 
@@ -201,5 +208,5 @@ experiment_logger.log_named_metrics(res_env, "transfer", current_task)
 all_data = env.init_multi_task(number_of_tasks=-1, train=False) # same test data for both agents
 data_iterator = iter(DataLoader(all_data, batch_size=128, shuffle=True, num_workers=8)) 
 # average environment evaluation
-res = evaluate_agent_task(10, agent, data_iterator, eval_criterion)
+res = evaluate_agent_task(10, agent, data_iterator, eval_criterion, ntasks_observed=-1)
 experiment_logger.close(res)

@@ -17,6 +17,21 @@ from avalanche.benchmarks.utils import (
     common_paths_root,
 )
 
+class TaskDataset(torch.utils.data.Dataset):
+    """Wrapper class for a torch dataset that adds a task_id to the output of __getitem__."""
+    
+    def __init__(self, dataset, task_id):
+        self.dataset = dataset
+        self.task_id = task_id
+
+    def __len__(self):
+        return len(self.dataset)
+
+    def __getitem__(self, index):
+        data, target = self.dataset[index]
+        return data, target, self.task_id
+
+
 
 class World:
     """ Generic class for a continual learning world. 
@@ -41,7 +56,6 @@ class World:
         mt_dataset = ConcatDataset(datasets)
         return mt_dataset
     
-
     def subsample(self, dataset, dataset_name, buffer_indices, buffer_size): 
         if dataset_name not in buffer_indices.keys(): 
             indices = random.sample(range(len(dataset)), buffer_size)
@@ -86,8 +100,6 @@ class World:
             If no ordering is given it provides a random ordering."""
         if ordering is None: ordering = np.random.permutation(range(len(self.task_names)))
         self.ordered_task_names = [self.task_names[i] for i in ordering]
-
-
 
 class Permutation(object):
     """
@@ -200,6 +212,7 @@ class PermutationWorld(World):
         self.permutation_size = permutation_size
         self.permutation_fraction = (self.permutation_size**2)/(self.data_size**2)
         self.world_name = f"permuted-cifar10-{permutation_size}"
+        self.num_classes_per_task = self.num_classes
 
 
         if train_transform is not None: self.train_transform = train_transform
@@ -233,9 +246,9 @@ class PermutationWorld(World):
                                         download=True, transform=transforms.Compose([self.train_transform, permutation_transform]))
             C100_dataset_test = CIFAR10(root="./datasets", train=False, download=True, 
                                          transform=transforms.Compose([self.test_transform, permutation_transform]))
-
-            stream_definitions['train'][label] = C100_dataset_train   
-            stream_definitions['test'][label] = C100_dataset_test   
+            
+            stream_definitions['train'][label] = TaskDataset(C100_dataset_train, task_id=i)   
+            stream_definitions['test'][label] = TaskDataset(C100_dataset_test, task_id=i)
 
         return stream_definitions
 
@@ -344,7 +357,8 @@ class SplitWorld(World):
         self.split_type = split_type
         if self.split_type == "classes": 
             assert self.num_classes % self.number_tasks == 0, "Number of tasks should be a multiple of the number of classes" 
-            self.num_classes = self.num_classes//number_tasks
+            self.num_classes_per_task = self.num_classes//number_tasks
+        else: self.num_classes_per_task = self.num_classes
         self.world_name = f"split-cifar100-{split_type}-{number_tasks}"
         self.randomize_class_order = randomize_class_order
 
@@ -380,12 +394,11 @@ class SplitWorld(World):
             
             label = f"split_{self.split_type}_{self.number_tasks}_{i}"
             task_labels.append(label)
-            stream_definitions['train'][label] = chunks_train.subsets[i]   
-            stream_definitions['test'][label] = chunks_test.subsets[i]
+            stream_definitions['train'][label] = TaskDataset(chunks_train.subsets[i], i)
+            stream_definitions['test'][label] = TaskDataset(chunks_test.subsets[i], i)
 
         return stream_definitions
         
-
 class Shuffle(object):
     """ Defines a label shuffling operation """    
     def __init__(self, num_samples, num_classes, shuffle_fraction, original_labels, shuffled_indices=None):
@@ -483,6 +496,7 @@ class LabelShufflingWorld(World):
         self.number_tasks = number_tasks
         self.shuffle_fraction = shuffle_fraction
         self.world_name = f"shuffled-cifar10-{shuffle_fraction}"
+        self.num_classes_per_task = self.num_classes
 
 
         if train_transform is not None: self.train_transform = train_transform
@@ -524,8 +538,8 @@ class LabelShufflingWorld(World):
             C10_dataset_train = IndexedCifar10(root="./datasets", train=True, download=True, transform=self.train_transform, target_transform=shuffle_transform)
             C10_dataset_test = CIFAR10(root="./datasets", train=False, download=True, transform=self.test_transform)
 
-            stream_definitions['train'][label] = C10_dataset_train   
-            stream_definitions['test'][label] = C10_dataset_test   
+            stream_definitions['train'][label] = TaskDataset(C10_dataset_train,i)
+            stream_definitions['test'][label] = TaskDataset(C10_dataset_test, i) 
 
         return stream_definitions
 
@@ -592,8 +606,8 @@ class MixedPermutationWorld(PermutationWorld):
             C100_dataset_test = CIFAR10(root="./datasets", train=False, download=True, 
                                          transform=transforms.Compose([self.test_transform, permutation_transform]))
 
-            stream_definitions['train'][label] = C100_dataset_train   
-            stream_definitions['test'][label] = C100_dataset_test   
+            stream_definitions['train'][label] = TaskDataset(C100_dataset_train, i)
+            stream_definitions['test'][label] = TaskDataset(C100_dataset_test, i)
 
         return stream_definitions
 
@@ -650,6 +664,7 @@ class MultiDatasetsWorld(World):
         self.num_classes = num_classes
         self.world_name = "multi-datasets"
         self.augment = augment
+        self.num_classes_per_task = self.num_classes
 
         if train_transform is not None: self.train_transform = train_transform
         if test_transform is not None: self.test_transform = test_transform
@@ -705,8 +720,6 @@ class MultiDatasetsWorld(World):
         val_dataset = OxfordIIITPet(root=root, split='test', download=True, transform=self.test_transform)
 
         return train_dataset, val_dataset
-    
-
 
     def load_dtd(self):
         """Loads DTD dataset
@@ -718,7 +731,6 @@ class MultiDatasetsWorld(World):
         val_dataset = DTD(root=root, split='test', download=True, transform=self.test_transform)
 
         return train_dataset, val_dataset
-
 
     def load_aircraft(self):
         """Loads Aircraft dataset 
@@ -758,8 +770,8 @@ class MultiDatasetsWorld(World):
             train, test = task_functions[i]()
             subset_train = self.select_dataset(train)
             subset_test = self.select_dataset(test)
-            stream_definitions['train'][label] = subset_train   
-            stream_definitions['test'][label] = subset_test   
+            stream_definitions['train'][label] = TaskDataset(subset_train, i)   
+            stream_definitions['test'][label] = TaskDataset(subset_test, i)
 
         return stream_definitions
 
@@ -800,6 +812,7 @@ class ClearWorld(World):
 
         super(ClearWorld, self).__init__()
         self.world_name = "clear-buckets"
+        self.num_classes_per_task = self.num_classes
 
 
         if train_transform is not None: self.train_transform = train_transform
@@ -843,14 +856,14 @@ class ClearWorld(World):
         task_labels=list(range(len(train_paths)))
         all_paths=dict(train=train_paths, test=test_paths)
 
-        # creating a separate dataset for each task
-        for stream_name, lists_of_files in all_paths.items():
+        for stream_name, lists_of_files in all_paths.items(): #train and test
             stream_datasets = {}
+            # creating a separate dataset for each task
             for task_id, list_of_files in enumerate(lists_of_files[1:]):
                 common_root, exp_paths_list = common_paths_root(list_of_files)
                 task_dataset = PathsDataset(common_root, exp_paths_list, transform=self.train_transform)
                 task_dataset.class_names = class_names
-                stream_datasets[f"{2004+task_labels[task_id]}"] = task_dataset
+                stream_datasets[f"{2004+task_labels[task_id]}"] = TaskDataset(task_dataset, task_id)
 
             stream_definitions[stream_name] = stream_datasets
 
