@@ -293,8 +293,9 @@ class Split(object):
 
         class_chunks = {i: [] for i in range(self.number_tasks)}
         self.class_to_chunk = {}
-        for i, label in enumerate(class_order):
-            chunk_idx = i % self.number_tasks
+        classes_per_task = (len(class_order) // self.number_tasks)
+        for label in class_order:
+            chunk_idx = label // classes_per_task
             class_chunks[chunk_idx].extend(class_indices[label])
             self.class_to_chunk[label] = chunk_idx
 

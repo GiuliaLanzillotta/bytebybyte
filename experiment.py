@@ -38,7 +38,7 @@ parser.add_argument('--seed', type=int, required=False, default=np.random.randin
 parser.add_argument('--device', type=int, required=True, help='Device identifier (integer).')
 parser.add_argument('--steps_per_task', type=int, required=False, nargs='+', default=[3000], help='Sequence of update steps for each task')
 parser.add_argument('--number_tasks', type=int, required=False, default=10, help='Number of the permutation tasks (integer)')
-parser.add_argument('--environment', type=str, required=False, default="clear", help='Name of the dataset (string)')
+parser.add_argument('--environment', type=str, required=False, default="split", help='Name of the dataset (string)')
 parser.add_argument('--exp_id', type=str, required=False, default=random_string(), help='Name of the experiment (string)')
 parser.add_argument('--checkpoint_freq', type=int, required=False, default=0, help='Frequency of saving checkpoints (integer). if 0, no checkpoints are saved')
 parser.add_argument('--wandb-project', type=str, required=True, help="name of wandb project")
@@ -47,7 +47,7 @@ parser.add_argument('--permutation_size', type=int, required=False, default=0, h
 parser.add_argument('--shuffling_fraction', type=float, required=False, default=0., help='Fraction of the labels shuffled (float)')
 parser.add_argument('--random_order', action='store_true', help='Flag to use random ordering of tasks')
 parser.add_argument('--task_sequence', type=int, required=False, nargs='+', help='Sequence of task indices (space-separated)')
-parser.add_argument('--split_type', type=str, required=False, default="chunk", choices=['chunks', 'classes'], help='Type of data split in split experiments (string)')
+parser.add_argument('--split_type', type=str, required=False, default="classes", choices=['chunks', 'classes'], help='Type of data split in split experiments (string)')
 # agent-specific arguments 
 parser.add_argument('--network_name', type=str, required=True, help='Name of the network used (string)')
 parser.add_argument('--multihead', action='store_true', help='Flag to use multihead network')

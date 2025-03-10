@@ -109,8 +109,8 @@ class BaseAgent:
         """ Artificially removing some classes from prediction. """
         nct = self.config["num_classes_per_task"]
         if self.config["multihead"]:
-            if not torch.all(input_task_index == input_task_index[0]):
-                raise AssertionError("Not all elements in the vector have the same value.")
+        #     if not torch.all(input_task_index == input_task_index[0]):
+        #         raise AssertionError("Not all elements in the vector have the same value.")
             start_index = nct*input_task_index
             end_index = nct*(input_task_index+1)
             for i in range(len(start_index)):

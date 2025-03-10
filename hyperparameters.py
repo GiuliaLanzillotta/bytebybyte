@@ -20,5 +20,14 @@ agent_hyperparameters = {
         "momentum":0.9,
         "scheduler_type":"cosine_anneal",
         "warmup_on":True
+    },
+    "split-c100-chunks-10_resnet18_base_multihead": {
+        "lr":0.05,
+        "batch_size":50, #1 epoch = 100 steps
+        "optimizer":"SGD",
+        "weight_decay":1e-5,
+        "momentum":0.9,
+        "scheduler_type":"cosine_anneal",
+        "warmup_on":True
     }
 }
