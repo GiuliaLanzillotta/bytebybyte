@@ -42,6 +42,7 @@ parser.add_argument('--environment', type=str, required=False, default="split", 
 parser.add_argument('--exp_id', type=str, required=False, default=random_string(), help='Name of the experiment (string)')
 parser.add_argument('--checkpoint_freq', type=int, required=False, default=0, help='Frequency of saving checkpoints (integer). if 0, no checkpoints are saved')
 parser.add_argument('--wandb-project', type=str, required=True, help="name of wandb project")
+parser.add_argument('--experiment_type', type=str, required=True, choices=['multitask', 'singletask'], help='Type of the experiment (string)')
 # dataset-specific  arguments
 parser.add_argument('--permutation_size', type=int, required=False, default=0, help='Size of the permutation (integer)')
 parser.add_argument('--shuffling_fraction', type=float, required=False, default=0., help='Fraction of the labels shuffled (float)')
@@ -70,6 +71,7 @@ agent_type = args.agent_type
 checkpoint_freq = args.checkpoint_freq
 split_type = args.split_type
 multihead = args.multihead
+exp_type = args.experiment_type
 
 
 # Set random seed for reproducibility
@@ -102,12 +104,13 @@ env.order_task_list(ordering)
 # --- 
 
 # configs setup 
-experiment_name =  environment_name+"_"+network_name+"_"+agent_type+("_multihead" if multihead else "_singlehead")
+experiment_name =  environment_name+"_"+network_name+"_"+agent_type+("_multihead" if multihead else "_singlehead")+"_"+exp_type
 timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
 experiment_config = {
     "exp_id": args.exp_id,
     "exp_timestamp": timestamp,
     "exp_name": experiment_name,
+    "exp_type": exp_type,
     "seed": seed,
     "steps_per_task" : steps_per_task,
     "num_tasks" : len(env_names),
@@ -129,8 +132,8 @@ pprint.pprint(experiment_config)
 
 # Initialize agent
 # Agent initialized and config files filled
-if not experiment_name in agent_hyperparameters.keys(): 
-    print(f"No stored hp for {experiment_name} experiment. Using default.")
+if not env.world_name in agent_hyperparameters.keys(): 
+    print(f"No stored hp for {env.world_name} experiment. Using default.")
 hp_dict = agent_hyperparameters.get(experiment_name, {}) 
 agent_class = get_agent_class_from_name(agent_type)
 agent = agent_class(device,  **experiment_config, **hp_dict)
@@ -147,8 +150,9 @@ for current_task, steps in enumerate(experiment_config['steps_per_task']):
     logging.info(f"\n Training on task {current_env_name} ")
 
     # initializing task objective and training data iterator
-    train_data = env.init_multi_task(number_of_tasks=current_task+1, train=True)
-    #train_data = env.init_single_task(task_number=current_task, train=True)
+    if exp_type=="multitask": 
+        train_data = env.init_multi_task(number_of_tasks=current_task+1, train=True)
+    else:  train_data = env.init_single_task(task_number=current_task, train=True)
     train_data_iterator = iter(DataLoader(train_data, batch_size=agent_config['batch_size'], shuffle=True, num_workers=NUM_WORKERS))
     # initialize training-time evaluation data 
     test_data = env.init_single_task(task_number=current_task, train=False) # same test data for both agents
