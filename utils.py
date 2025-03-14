@@ -11,55 +11,6 @@ import numpy as np
 import torch
 import glob
 
-def read_results():
-    # Load the JSON file
-    file_path = './results/experiments.json'
-    with open(file_path, 'r') as f:
-        experiments_data = json.load(f)
-    # Extract relevant information into a pandas DataFrame
-    # We are assuming that the JSON file contains a list of experiments
-    data = []
-
-    for experiment in experiments_data:
-        exp_id = experiment.get('exp_id', '')
-        agent_name = experiment.get('agent_name', '')
-        config = experiment.get('config', {})
-        metrics = experiment.get('metrics', [])
-        summary_stats = experiment.get('summary_stats', {})
-
-        # Combine all relevant details into a flat dictionary
-        row = {
-            'exp_id': exp_id,
-            'agent_name': agent_name,
-            'network': config.get('network', ''),
-            'optimizer': config.get('optimizer', ''),
-            'lr': config.get('lr', 0),
-            'weight_decay': config.get('weight_decay', 0),
-            'momentum': config.get('momentum', 0),
-            'step_scheduler_decay': config.get('step_scheduler_decay', 0),
-            'scheduler_step': config.get('scheduler_step', 0),
-            'scheduler_type': config.get('scheduler_type', ''),
-            'loss': config.get('loss', ''),
-            'batch_size': config.get('batch_size', 0),
-            'exp_seed': config.get('seed', 0),
-            'task_duration': config.get('task_duration', 0),
-            'num_tasks': config.get('num_tasks', 0),
-            'data': config.get('data', ''),
-            'device': config.get('device', 0),
-            'test_loss_offline': summary_stats.get('test_loss_offline', 0),
-            'test_error_offline': summary_stats.get('test_error_offline', 0),
-            'cumulative_error': summary_stats.get('cumulative_error', 0),
-            'average_error': summary_stats.get('average_error', 0)
-        }
-        
-        data.append(row)
-
-    # Create a pandas DataFrame
-    df = pd.DataFrame(data)
-
-    return df
-
-
 def save_model_checkpoint(model, optimizer, path, **kwargs):
     """Save a model checkpoint to the specified path."""
     # Save checkpoint
@@ -109,10 +60,10 @@ class AgentLogger:
         # Log the configuration dictionary if provided
         self.log_config(config)
 
-    def save_checkpoint(self, agent, directory, current_task):
-        path = directory+f"{self.exp_id}-t{current_task}-s{self.timer}.pth"
+    def save_checkpoint(self, agent, directory, current_task, step):
+        path = directory+f"{self.exp_id}-t{current_task}-s{step}.pth"
         logging.info(f"Saving model checkpoint to {path}")
-        info = {'step': self.timer}
+        info = {'timer': self.timer}
         
         save_model_checkpoint(agent.network, agent.optimizer, path, **info, config=agent.config)
 
@@ -124,12 +75,15 @@ class AgentLogger:
             latest_checkpoint = max(checkpoint_paths, key=os.path.getctime)
             return latest_checkpoint
     
-    def load_checkpoint(self, agent, directory, task_to_load):
-        path = self.get_latest_checkpoint_path(directory, self.exp_id, task=task_to_load)
+    def load_checkpoint(self, agent, directory, task_to_load, step=None):
+        if step is None: 
+            path = self.get_latest_checkpoint_path(directory, self.exp_id, task=task_to_load)
+        else: 
+            path = directory + f"{self.exp_id}-t{task_to_load}-s{step}.pth"
         if path:
             logging.info(f"Loading model checkpoint from {path}")
-            info, config = load_model_checkpoint(agent.model, agent.optimizer, path, ["step"])
-            self.timer = info['step']
+            info, config = load_model_checkpoint(agent.network, agent.optimizer, path, ["timer"])
+            self.timer = info['timer']
             agent.config = config
             return agent
 
@@ -280,14 +234,14 @@ class ExperimentLogger:
         self.agent_logger.log_named_metrics(metrics, name, current_task)
 
     
-    def save_checkpoint(self, agent, current_task):
+    def save_checkpoint(self, agent, current_task, step):
         directory = f'{self.exp_directory}/checkpoints/'
         os.makedirs(directory, exist_ok=True)
-        self.agent_logger.save_checkpoint(agent, directory, current_task)
+        self.agent_logger.save_checkpoint(agent, directory, current_task, step)
 
-    def load_checkpoint(self, agent, task_to_load):
+    def load_checkpoint(self, agent, task_to_load, step=None):
         directory = f'{self.exp_directory}/checkpoints/'
-        agent = self.agent_logger.load_checkpoint(agent, directory, task_to_load)
+        agent = self.agent_logger.load_checkpoint(agent, directory, task_to_load, step)
         return agent
 
     

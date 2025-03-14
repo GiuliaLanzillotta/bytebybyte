@@ -27,6 +27,7 @@ class BaseAgent:
         "weight_decay":1e-5,
         "momentum":0.9,
         "step_scheduler_decay":300,
+        "cosine_scheduler_duration": 1.0,
         "scheduler_step":0.1,
         "scheduler_type":"step", #cosine_anneal
         "loss":"CE",
@@ -80,7 +81,7 @@ class BaseAgent:
         if self.config['scheduler_type']=="step":
             self.scheduler = torch.optim.lr_scheduler.StepLR(self.optimizer, step_size=int(self.config['step_scheduler_decay']), gamma=self.config['scheduler_step'])
         elif self.config['scheduler_type'] == "cosine_anneal":
-            self.scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(self.optimizer, T_0=self.config['steps_per_task'][task], T_mult=1, eta_min=1e-5)
+            self.scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(self.optimizer, T_max=int(self.config['cosine_scheduler_duration']*self.config['steps_per_task'][task]), eta_min=1e-5)
         else: 
             self.scheduler = torch.optim.lr_scheduler.ConstantLR(self.optimizer, factor=1, total_iters=-1)
         if self.config["warmup_on"]:

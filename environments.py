@@ -290,12 +290,13 @@ class Split(object):
         class_order = list(class_indices.keys())
         if randomize:
             random.shuffle(class_order)
+        else: class_order.sort()
 
         class_chunks = {i: [] for i in range(self.number_tasks)}
         self.class_to_chunk = {}
         classes_per_task = (len(class_order) // self.number_tasks)
-        for label in class_order:
-            chunk_idx = label // classes_per_task
+        for i,label in enumerate(class_order):
+            chunk_idx = i // classes_per_task
             class_chunks[chunk_idx].extend(class_indices[label])
             self.class_to_chunk[label] = chunk_idx
 
@@ -362,6 +363,7 @@ class SplitWorld(World):
         else: self.num_classes_per_task = self.num_classes
         self.world_name = f"split-cifar100-{split_type}-{number_tasks}"
         self.randomize_class_order = randomize_class_order
+        if self.number_tasks > 10: self.batches_eval = 1
 
 
         if train_transform is not None: self.train_transform = train_transform

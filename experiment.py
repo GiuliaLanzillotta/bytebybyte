@@ -27,7 +27,7 @@ def random_string(length=8):
     letters = string.ascii_lowercase
     return ''.join(random.choice(letters) for i in range(length))
 
-LOG_FILE = 'experiments_icml.json'
+LOG_FILE = 'experiments.json'
 NUM_WORKERS = 8
 EVAL_EVERY = 10 # evaluate every 10 training steps
 
@@ -158,9 +158,6 @@ for current_task, steps in enumerate(experiment_config['steps_per_task']):
     if current_task > 0: agent.reset_optimizer(task=current_task)
 
     for step in range(steps): 
-        #checkpoint saving
-        if checkpoint_freq>0 and t % checkpoint_freq == 0: 
-            experiment_logger.save_checkpoint(agent, current_task)
 
         agent.ready_train() 
         try: train_loss, train_error = agent.update_one_step(train_data_iterator, current_task)
@@ -176,7 +173,7 @@ for current_task, steps in enumerate(experiment_config['steps_per_task']):
         res['train_loss']=train_loss
         res['train_error']=train_error
 
-        if t % EVAL_EVERY == 0:
+        if step % EVAL_EVERY == 0:
             try: 
                 eval_res = evaluate_agent_task(batches_eval, agent, test_data_iterator, eval_criterion, ntasks_observed=current_task)
             except StopIteration: 
@@ -186,25 +183,22 @@ for current_task, steps in enumerate(experiment_config['steps_per_task']):
             res.update(eval_res)
             experiment_logger.log(res, t)
         
-        t+=1
+        # saving checkpoint 
+        if checkpoint_freq>0 and (step+1) % checkpoint_freq == 0: 
+            print(f"Saving checkpoint {step+1}!")
+            experiment_logger.save_checkpoint(agent, current_task, step+1)
 
+        t+=1
+        
     #TODO do end of task evaluations 
     # evaluate performance on all other tasks (forward and backward transfer)
     res_env = evaluate_agent_all_tasks_env(batches_eval, agent, env, train=False, ntasks_observed=current_task)
     experiment_logger.log_named_metrics(res_env, "transfer", current_task)
 
-#checkpoint saving
-if checkpoint_freq>0: 
-    experiment_logger.save_checkpoint(agent, current_task)
 
 logging.info("Training completed")
-
-# do end of task evaluations 
-res_env = evaluate_agent_all_tasks_env(batches_eval, agent, env, train=False, ntasks_observed=-1)
-experiment_logger.log_named_metrics(res_env, "transfer", current_task)
-
 #produce final metrics and log 
-# offline evaluation 
+# average/offline evaluation 
 all_data = env.init_multi_task(number_of_tasks=-1, train=False) # same test data for both agents
 data_iterator = iter(DataLoader(all_data, batch_size=128, shuffle=True, num_workers=8)) 
 # average environment evaluation

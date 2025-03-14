@@ -21,6 +21,15 @@ class BaseNN(nn.Module):
     
     def count_parameters(model):
         return sum(p.numel() for p in model.parameters())
+    
+    def assign_weights(self, weight_vector):
+        """ Changes the network weights to match the weight_vector """
+        with torch.no_grad():
+            start_idx = 0
+            for param in self.parameters():
+                param_length = param.numel()
+                param.data = weight_vector[start_idx:start_idx + param_length].view(param.size())
+                start_idx += param_length
 
 class CustomCNN(BaseNN):
     def __init__(self, input_channels, num_classes, num_layers, base_channels=32, input_size=32):
@@ -157,7 +166,6 @@ class ResNet(BaseNN):
         self.initialize_head()
         
         print(f"Number of parameters {self.count_parameters()/1e6} MLN")
-
 
     def _make_layer(self, block, planes, num_blocks, stride):
         strides = [stride] + [1] * (num_blocks - 1)
