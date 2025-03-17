@@ -77,13 +77,20 @@ class CustomCNN(BaseNN):
         output = self.conv_layers(test_input)
         return int(torch.prod(torch.tensor(output.shape[1:])))  # Flatten output size
 
-    def get_features(self, x):
+    def get_features(self, x, return_intermediate=False):
+        intermediate_outputs = []
+        
         # Apply the convolutional layers
-        x = self.conv_layers(x)
+        for layer in self.conv_layers:
+            x = layer(x)
+            if return_intermediate:
+                intermediate_outputs.append(x)
         
         # Flatten the output of conv layers before feeding it into the fully connected layer
         x = x.view(x.size(0), -1)
 
+        if return_intermediate:
+            return intermediate_outputs, x
         return x
 
     def forward(self, x):
@@ -176,14 +183,35 @@ class ResNet(BaseNN):
         return nn.Sequential(*layers)
 
 
-    def get_features(self, x):
+    def get_features(self, x, return_intermediate=False):
+
+        intermediate_outputs = []
+        
         out = relu(self.bn1(self.conv1(x)))
+        if return_intermediate:
+            intermediate_outputs.append(out)
+        
         out = self.layer1(out)
+        if return_intermediate:
+            intermediate_outputs.append(out)
+        
         out = self.layer2(out)
+        if return_intermediate:
+            intermediate_outputs.append(out)
+        
         out = self.layer3(out)
+        if return_intermediate:
+            intermediate_outputs.append(out)
+        
         out = self.layer4(out)
+        if return_intermediate:
+            intermediate_outputs.append(out)
+        
         out = avg_pool2d(out, 4)
         out = out.view(out.size(0), -1)
+
+        if return_intermediate:
+            return intermediate_outputs, out
         return out
 
     def forward(self, x):
