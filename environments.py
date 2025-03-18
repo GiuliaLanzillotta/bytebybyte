@@ -45,6 +45,7 @@ class World:
         self.task_names = {}
         self.ordered_task_names = self.task_names
         self.world_name = ""
+        self.buffer_indices = {} #only used when doing replay
         
     def init_multi_task(self, number_of_tasks=-1, train=True):
         """ Concatenates the first 'number_of_tasks' tasks into a single task by concatenating the datasets."""
@@ -56,14 +57,16 @@ class World:
         mt_dataset = ConcatDataset(datasets)
         return mt_dataset
     
-    def subsample(self, dataset, dataset_name, buffer_indices, buffer_size): 
-        if dataset_name not in buffer_indices.keys(): 
+    def subsample(self, dataset, dataset_name, buffer_size): 
+        if dataset_name not in self.buffer_indices.keys(): 
+            if 0 < buffer_size < 1:
+                buffer_size = int(buffer_size * len(dataset))
             indices = random.sample(range(len(dataset)), buffer_size)
-            buffer_indices[dataset_name] = indices
-        subset = torch.utils.data.Subset(dataset, buffer_indices[dataset_name]) 
-        return subset, buffer_indices
+            self.buffer_indices[dataset_name] = indices
+        subset = torch.utils.data.Subset(dataset, self.buffer_indices[dataset_name]) 
+        return subset
     
-    def init_buffer(self, boundaries:tuple, buffer_indices, buffer_size):
+    def init_buffer(self, boundaries:tuple, buffer_size):
         """ Returns a buffer dataset made of the concatenation of several subsampled datasets"""
         (first_task, last_task) = boundaries
         env = self.environment['train']
@@ -71,10 +74,10 @@ class World:
         if boundaries == (0,-1): mt_task_names = self.ordered_task_names
         datasets = []
         for t in mt_task_names:
-            buffer_dataset, buffer_indices = self.subsample(env[t], t, buffer_indices, buffer_size)
+            buffer_dataset = self.subsample(env[t], t, buffer_size)
             datasets.append(buffer_dataset)
         mt_dataset = ConcatDataset(datasets)
-        return mt_dataset, buffer_indices
+        return mt_dataset
 
     def buffered_multi_task(self, number_of_tasks=-1, train=True, buffer_size=500):
         """ Uses a sampling process to decrease the datasets size. 

@@ -123,11 +123,11 @@ class BaseAgent:
             output[:,end_index:].data.fill_(-10e10)
         return output
 
-    def compute_loss(self, data_iterator, current_task=-1):
+    def compute_loss(self, data, current_task=-1):
         """Samples one batch from the data iterator and computes the loss.
         Returns accuracy and loss.
         """
-        x, y, task_id = next(data_iterator) 
+        x, y, task_id = data
         device = f"cuda:{self.config['device']}"
         x = x.to(device); y = y.to(device)
         output = self.network(x)
@@ -135,12 +135,13 @@ class BaseAgent:
             # exclude classes from the loss 
             output = self.compute_dynamic_output(output, current_task, task_id)
         loss = self.loss(output, y)
-        acc = torch.sum((torch.max(output,dim=1)[1] == y).float())/len(y)
-        return loss, acc
+        guesses = (torch.max(output,dim=1)[1] == y)
+        return loss, guesses
 
-    def update_one_step(self, data_iterator, current_task=-1):
-        loss, acc = self.compute_loss(data_iterator, current_task)
+    def update_one_step(self, data, current_task=-1):
+        loss, current_task_guesses = self.compute_loss(data, current_task)
         self.update(loss)
+        acc = torch.sum(current_task_guesses.float())/len(current_task_guesses)
 
         return loss.detach().item(), 1 - acc.detach().item()
 
@@ -205,10 +206,10 @@ class RegularizationAgent(BaseAgent):
         else:
             raise NotImplementedError
 
-    def update_one_step(self, data_iterator, current_task=-1):
+    def update_one_step(self, data, current_task=-1):
         """ Performs one update step of the parameters based on the agent loss. It draws a batch from the data_iterator and the buffer_iterator. Note that the batches might be of different sizes, thus the replay is not necessarily balanced."""
 
-        unregularized_loss, current_task_guesses = super().compute_loss(data_iterator, current_task)
+        unregularized_loss, current_task_guesses = super().compute_loss(data, current_task)
         regularization = self.compute_regularization()
         loss = unregularized_loss + self.config['regularization_strength']*regularization
         self.update(loss)
@@ -224,7 +225,7 @@ class RegularizationAgent(BaseAgent):
 class ReplayAgent(RegularizationAgent):
     """Uses simple experience replay on top of the current task objective (potentially regularised)
     """
-    
+    FIXED_SHARE = 0.5 # fixed share of replay for the current task
     default_config = { #TODO: make a separate config for replay
         "network":"resnet18",
         "optimizer":"SGD",
@@ -239,24 +240,36 @@ class ReplayAgent(RegularizationAgent):
         "warmup_on": True,
         "regularization_strength": 0.01,
         "regularizer":"EWC",
-        "buffer_size":500
+        "replay_fraction": 0.1,
+        "replay_type": "fixed"
     }
 
     def __init__(self, device, **kwargs) -> None:
         super().__init__(device=device,**kwargs)
         self.regularization_on = self.config['regularization_strength']>0
+    
+    def calculate_task_batchsize(self, task_id): 
+        if self.config["replay_type"] == "balanced": 
+            batch_size = self.config['batch_size']//(task_id+1)
+            return batch_size, batch_size
+        elif self.config["replay_type"] == "fixed": # the current task gets a fixed share
+            batch_size_new = int(self.FIXED_SHARE * self.config['batch_size'])
+            batch_size_replay = (self.config['batch_size'] - batch_size_new)//(task_id)
+            return batch_size_new, batch_size_replay
+        raise NotImplementedError
         
 
-    def update_one_step(self, data_iterator, buffer_iterator=None, current_task=-1):
-        """ Performs one update step of the parameters based on the agent loss. It draws a batch from the data_iterator and the buffer_iterator. Note that the batches might be of different sizes, thus the replay is not necessarily balanced."""
 
-        if buffer_iterator is None: #simple update
-            return super().update_one_step(data_iterator, current_task)
+    def update_one_step(self, data, buffer_data=None, current_task=-1):
+        """ Performs one update step of the parameters based on the agent loss. It draws a batch from the data and the buffer_data. Note that the batches might be of different sizes, thus the replay is not necessarily balanced."""
+
+        if buffer_data is None: #simple update
+            return super().update_one_step(data, current_task)
         
         # replay update 
         # we assume that the same loss is applied to the current task and buffer samples. This holds true only for ER 
-        current_task_loss, current_task_guesses = super().compute_loss(data_iterator, current_task)
-        buffer_loss, buffer_guesses = super().compute_loss(buffer_iterator, current_task)
+        current_task_loss, current_task_guesses = super().compute_loss(data, current_task)
+        buffer_loss, buffer_guesses = super().compute_loss(buffer_data, current_task)
         loss = current_task_loss + buffer_loss
         if self.regularization_on:
             regularization = self.compute_regularization()
@@ -272,6 +285,11 @@ class ReplayAgent(RegularizationAgent):
 
 
 def get_agent_class_from_name(agent_name):
-    if agent_name=="base": return BaseAgent
-    if agent_name=="regularization": return RegularizationAgent
-    if agent_name=="replay": return ReplayAgent
+    if agent_name=="base": 
+        return BaseAgent, []
+    if agent_name=="regularization": 
+        agent_specific_args = ["regularization_strength", "regularizer"]
+        return RegularizationAgent, agent_specific_args
+    if agent_name=="replay": 
+        agent_specific_args = ["replay_fraction", "replay_type"] + ["regularization_strength", "regularizer"]
+        return ReplayAgent, agent_specific_args

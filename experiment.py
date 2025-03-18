@@ -53,6 +53,11 @@ parser.add_argument('--split_type', type=str, required=False, default="classes",
 parser.add_argument('--network_name', type=str, required=True, help='Name of the network used (string)')
 parser.add_argument('--multihead', action='store_true', help='Flag to use multihead network')
 parser.add_argument('--agent_type', type=str, required=True, choices=['base','regularization','replay'], help='Type of the agent (string)')
+parser.add_argument('--replay_fraction', type=float, required=False, default=0.0, help='Fraction of replay data for each task (float)')
+parser.add_argument('--replay_type', type=str, required=False, choices=['balanced', 'fixed'], default='balanced', help='Type of replay (string)')
+parser.add_argument('--regularization_strength', type=float, required=False, default=0.0, help='Strength of the regularization (float)')
+parser.add_argument('--regularizer', type=str, required=False, choices=['EWC'], default=['EWC'], help='Type of regularization (string)')
+
 
 # Parse the arguments
 args = parser.parse_args()
@@ -134,10 +139,13 @@ pprint.pprint(experiment_config)
 # Agent initialized and config files filled
 if not env.world_name in agent_hyperparameters.keys(): 
     print(f"No stored hp for {env.world_name} experiment. Using default.")
-hp_dict = agent_hyperparameters.get(experiment_name, {}) 
-agent_class = get_agent_class_from_name(agent_type)
+hp_dict = agent_hyperparameters.get(experiment_name, {})
+agent_class, agent_specific_args = get_agent_class_from_name(agent_type)
+agent_specific_config = {key: vars(args).get(key, None) for key in agent_specific_args}
 agent = agent_class(device,  **experiment_config, **hp_dict)
 agent_config = agent.config # collect the filled config (with all the agent- and experiment-related info)
+replay_on = "replay" in agent_type
+if replay_on: assert exp_type != "multitask", "Replay can only be used in a singletask setting"
 
 # Logger initialized
 experiment_logger = ExperimentLogger(args.exp_id, timestamp, experiment_name, log_to_file=False, external_json_file=LOG_FILE, log_wandb=True, wandb_project=args.wandb_project, config=agent_config)
@@ -150,10 +158,16 @@ for current_task, steps in enumerate(experiment_config['steps_per_task']):
     logging.info(f"\n Training on task {current_env_name} ")
 
     # initializing task objective and training data iterator
+    batch_size=agent_config['batch_size']
     if exp_type=="multitask": 
         train_data = env.init_multi_task(number_of_tasks=current_task+1, train=True)
     else:  train_data = env.init_single_task(task_number=current_task, train=True)
-    train_data_iterator = iter(DataLoader(train_data, batch_size=agent_config['batch_size'], shuffle=True, num_workers=NUM_WORKERS))
+    if replay_on and current_task>0: 
+        batch_size, batch_size_replay = agent.calculate_task_batchsize(current_task) # balanced replay, every task gets the same amount of data in 
+        buffer_data = env.init_buffer((0,current_task), buffer_size=agent_config['replay_fraction'])
+        buffer_data_iterator = iter(DataLoader(buffer_data, batch_size=batch_size_replay*(current_task), shuffle=True))
+
+    train_data_iterator = iter(DataLoader(train_data, batch_size=batch_size, shuffle=True, num_workers=NUM_WORKERS))
     # initialize training-time evaluation data 
     test_data = env.init_single_task(task_number=current_task, train=False) # same test data for both agents
     test_data_iterator = iter(DataLoader(test_data, batch_size=128, shuffle=True, num_workers=NUM_WORKERS)) 
@@ -164,12 +178,21 @@ for current_task, steps in enumerate(experiment_config['steps_per_task']):
     for step in range(steps): 
 
         agent.ready_train() 
-        try: train_loss, train_error = agent.update_one_step(train_data_iterator, current_task)
+        try: data_point = next(train_data_iterator) 
         except StopIteration: 
                 # re-initialise train iterator
-                train_data_iterator = iter(DataLoader(train_data, batch_size=agent_config['batch_size'], shuffle=True, num_workers=NUM_WORKERS))
-                train_loss, train_error = agent.update_one_step(train_data_iterator, current_task)
+                train_data_iterator = iter(DataLoader(train_data, batch_size=batch_size, shuffle=True, num_workers=NUM_WORKERS))
+                data_point = next(train_data_iterator) 
+        if not replay_on or current_task==0: 
+                train_loss, train_error = agent.update_one_step(data_point, current_task= current_task)
+        else: 
+            try: buffer_data_poin = next(buffer_data_iterator)
+            except StopIteration: 
+                buffer_data_iterator = iter(DataLoader(buffer_data, batch_size=batch_size_replay*(current_task), shuffle=True))
+                buffer_data_poin = next(buffer_data_iterator)
+            train_loss, train_error = agent.update_one_step(data_point, buffer_data_iterator, current_task)
         
+    
 
         # logging and evaluation
         res = {}
