@@ -64,3 +64,55 @@ def compute_CKA():
 def compute_Fisher():
     raise NotImplementedError
 
+import torch
+from torch.cuda.amp import autocast
+
+def hessian_vector_product(grad, params, vectors):
+    """Compute batched Hessian-vector product (HVP) using autograd."""
+    hvps = torch.autograd.grad(grad, params, grad_outputs=vectors, retain_graph=True)
+    return torch.stack([g.flatten() for g in hvps], dim=1)  # Stack for batched computation
+
+def top_k_hessian_eigen(agent, criterion, data, K=5, max_iters=20,ntasks_observed=-1):
+    """GPU-optimized computation of top-K Hessian eigenvalues and eigenvectors using Lanczos."""
+    agent.network.zero_grad()
+    x, y, task_id = data
+    x, y = x.cuda(), y.cuda()
+    
+    
+    with autocast():  # Mixed precision for better performance
+        out,y = agent.predict((x,y,task_id), ntasks_observed)
+        loss = criterion(out, y)
+    
+    grads = torch.autograd.grad(loss, agent.network.parameters(), create_graph=True)
+    grad_vector = torch.cat([g.flatten() for g in grads]).detach()  # Convert to vector
+    N = grad_vector.shape[0]  # Number of parameters
+    
+    # Initialize Krylov subspace
+    Q = torch.zeros((N, K), device='cuda', dtype=torch.float32)
+    T = torch.zeros((K, K), device='cuda', dtype=torch.float32)
+    
+    q = torch.randn(N, device='cuda', dtype=torch.float32)
+    q /= q.norm()
+    
+    for k in range(K):
+        Q[:, k] = q
+        Hv = hessian_vector_product(grad_vector, list(agent.network.parameters()), q)
+        
+        if k > 0:
+            Hv -= T[k - 1, k] * Q[:, k - 1]  # Orthogonalization
+        
+        alpha = torch.dot(Hv, q)
+        T[k, k] = alpha
+        Hv -= alpha * q
+        
+        beta = Hv.norm()
+        if k < K - 1:
+            T[k, k + 1] = beta
+            T[k + 1, k] = beta
+            q = Hv / beta
+    
+    # Compute eigenvalues and eigenvectors of the small KxK matrix
+    eigvals, eigvecs = torch.linalg.eigh(T.cpu())
+    eigvecs_full = Q @ eigvecs.cuda()  # Map back to full space
+    
+    return eigvals, eigvecs_full

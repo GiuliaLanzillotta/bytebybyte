@@ -115,12 +115,12 @@ class BaseAgent:
             start_index = nct*input_task_index
             end_index = nct*(input_task_index+1)
             for i in range(len(start_index)):
-                output[i,:start_index[i]].data.fill_(-10e10)
-                output[i,end_index[i]:].data.fill_(-10e10)   
+                output[i,:start_index[i]].data.fill_(-65504)
+                output[i,end_index[i]:].data.fill_(-65504)   
             
         else: 
             end_index = nct*(current_task+1)
-            output[:,end_index:].data.fill_(-10e10)
+            output[:,end_index:].data.fill_(-65504)
         return output
 
     def compute_loss(self, data, current_task=-1):
@@ -179,12 +179,13 @@ class RegularizationAgent(BaseAgent):
         "momentum":0.9,
         "step_scheduler_decay":300,
         "scheduler_step":0.1,
+        "cosine_scheduler_duration": 1.0,
         "scheduler_type":"step", #cosine_anneal
         "loss":"CE",
         "batch_size":256,
         "warmup_on": True,
         "regularization_strength": 0.01,
-        "regularizer":"EWC"
+        "regularizer":"Null"
     }
 
     def __init__(self, device, **kwargs) -> None:
@@ -201,7 +202,10 @@ class RegularizationAgent(BaseAgent):
     def compute_regularization(self, data_iterator=None):
         """ Computes a regularization on the network parameters.
         Returns the regularization term of the loss."""
-        if self.regularizer_name == "EWC":
+        if self.regularizer_name == "Null":
+            return 0
+        
+        elif self.regularizer_name == "EWC":
             return self.compute_ewc()
         else:
             raise NotImplementedError
@@ -234,12 +238,13 @@ class ReplayAgent(RegularizationAgent):
         "momentum":0.9,
         "step_scheduler_decay":300,
         "scheduler_step":0.1,
+        "cosine_scheduler_duration": 1.0,
         "scheduler_type":"step", #cosine_anneal
         "loss":"CE",
         "batch_size":256,
         "warmup_on": True,
         "regularization_strength": 0.01,
-        "regularizer":"EWC",
+        "regularizer":"Null",
         "replay_fraction": 0.1,
         "replay_type": "fixed"
     }

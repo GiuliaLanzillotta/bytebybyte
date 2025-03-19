@@ -10,6 +10,16 @@ import random
 import numpy as np
 import torch
 import glob
+import random
+
+def seed_everything(seed=42):
+    random.seed(seed)
+    os.environ['PYTHONHASHSEED'] = str(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed(seed)
+    torch.backends.cudnn.deterministic = True
+ 
 
 def save_model_checkpoint(model, optimizer, path, **kwargs):
     """Save a model checkpoint to the specified path."""
