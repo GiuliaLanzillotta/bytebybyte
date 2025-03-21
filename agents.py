@@ -246,7 +246,8 @@ class ReplayAgent(RegularizationAgent):
         "regularization_strength": 0.01,
         "regularizer":"Null",
         "replay_fraction": 0.1,
-        "replay_type": "fixed"
+        "replay_type": "fixed",
+        "num_replay_tasks": -1
     }
 
     def __init__(self, device, **kwargs) -> None:
@@ -254,13 +255,14 @@ class ReplayAgent(RegularizationAgent):
         self.regularization_on = self.config['regularization_strength']>0
     
     def calculate_task_batchsize(self, task_id): 
+        total_replay_tasks = task_id if self.config["num_replay_tasks"] == -1 else min(self.config["num_replay_tasks"], task_id)
         if self.config["replay_type"] == "balanced": 
-            batch_size = self.config['batch_size']//(task_id+1)
-            return batch_size, batch_size
+            batch_size = self.config['batch_size']//(total_replay_tasks+1)
+            return batch_size, batch_size, total_replay_tasks
         elif self.config["replay_type"] == "fixed": # the current task gets a fixed share
             batch_size_new = int(self.FIXED_SHARE * self.config['batch_size'])
-            batch_size_replay = (self.config['batch_size'] - batch_size_new)//(task_id)
-            return batch_size_new, batch_size_replay
+            batch_size_replay = (self.config['batch_size'] - batch_size_new)//(total_replay_tasks)
+            return batch_size_new, batch_size_replay, total_replay_tasks
         raise NotImplementedError
         
 
@@ -296,5 +298,5 @@ def get_agent_class_from_name(agent_name):
         agent_specific_args = ["regularization_strength", "regularizer"]
         return RegularizationAgent, agent_specific_args
     if agent_name=="replay": 
-        agent_specific_args = ["replay_fraction", "replay_type"] + ["regularization_strength", "regularizer"]
+        agent_specific_args = ["replay_fraction", "replay_type", "num_replay_tasks"] + ["regularization_strength", "regularizer"]
         return ReplayAgent, agent_specific_args

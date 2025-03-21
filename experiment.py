@@ -58,6 +58,7 @@ parser.add_argument('--replay_type', type=str, required=False, choices=['balance
 parser.add_argument('--regularization_strength', type=float, required=False, default=0.0, help='Strength of the regularization (float)')
 parser.add_argument('--regularizer', type=str, required=False, choices=['Null', 'EWC'], default='Null', help='Type of regularization (string)')
 parser.add_argument('--batch_size', type=int, required=False, help='Batch size for training (integer)')
+parser.add_argument('--num_replay_tasks', type=int, required=False,  default=-1, help='Number of tasks to replay (integer)')
 
 # Parse the arguments
 args = parser.parse_args()
@@ -168,10 +169,11 @@ for current_task, steps in enumerate(experiment_config['steps_per_task']):
         train_data = env.init_multi_task(number_of_tasks=current_task+1, train=True)
     else: train_data = env.init_single_task(task_number=current_task, train=True)
     if replay_on and current_task>0: 
-        batch_size, batch_size_replay = agent.calculate_task_batchsize(current_task) # balanced replay,every task gets the same amount of data in 
-        print(f"Using batch sizes: {batch_size} (new) and {batch_size_replay} (old)")
-        buffer_data = env.init_buffer((0,current_task), buffer_size=agent_config['replay_fraction'])
-        buffer_data_iterator = iter(DataLoader(buffer_data, batch_size=batch_size_replay*(current_task), shuffle=True))
+        batch_size, batch_size_replay, total_replay_tasks = agent.calculate_task_batchsize(current_task) # balanced replay,every task gets the same amount of data in 
+        initial_task = current_task-total_replay_tasks
+        print(f"Using batch sizes: {batch_size} (new) and {batch_size_replay} (old) for {total_replay_tasks} tasks")
+        buffer_data = env.init_buffer((initial_task,current_task), buffer_size=agent_config['replay_fraction'])
+        buffer_data_iterator = iter(DataLoader(buffer_data, batch_size=batch_size_replay*(total_replay_tasks), shuffle=True))
 
     train_data_iterator = iter(DataLoader(train_data, batch_size=batch_size, shuffle=True, num_workers=NUM_WORKERS))
     # initialize training-time evaluation data 
@@ -194,7 +196,7 @@ for current_task, steps in enumerate(experiment_config['steps_per_task']):
         else: 
             try: buffer_data_point = next(buffer_data_iterator)
             except StopIteration: 
-                buffer_data_iterator = iter(DataLoader(buffer_data, batch_size=batch_size_replay*(current_task), shuffle=True))
+                buffer_data_iterator = iter(DataLoader(buffer_data, batch_size=batch_size_replay*(total_replay_tasks), shuffle=True))
                 buffer_data_point = next(buffer_data_iterator)
             train_loss, train_error = agent.update_one_step(data_point, buffer_data_point, current_task)
         

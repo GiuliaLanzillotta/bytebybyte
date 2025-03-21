@@ -12,6 +12,32 @@ import torch
 import glob
 import random
 
+
+def has_batch_norm(net):
+    for n, p in net.named_modules():
+        if isinstance(p, torch.nn.BatchNorm2d): return True
+    return False
+
+def get_norm_distance(m1, m2):
+    return torch.norm(m1-m2, 2).item()
+
+def get_cosine_similarity(m1, m2):
+    cosine = torch.nn.CosineSimilarity(dim=0, eps=1e-6)
+    return cosine(m1, m2)
+
+def get_params(net):
+    # Initialize an empty list to store the parameters
+    params_list = []
+
+    # Iterate over all the parameters of the network and append them to the list
+    for param in net.parameters():
+        params_list.append(param.data.view(-1))
+
+    # Concatenate the list to a single tensor
+    params_vector = torch.cat(params_list)
+
+    return params_vector
+
 def seed_everything(seed=42):
     random.seed(seed)
     os.environ['PYTHONHASHSEED'] = str(seed)
