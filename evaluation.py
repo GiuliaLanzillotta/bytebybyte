@@ -12,6 +12,7 @@ from scipy.sparse.linalg import LinearOperator, eigsh
 from utils import get_cosine_similarity, get_norm_distance, has_batch_norm
 
 
+
 def evaluate_agent_all_tasks_env(num_batches, agent, env, train=False, eval_criterion=None, ntasks_observed=-1):
     """Evaluates the agent on all tasks in the environment."""
 
@@ -99,11 +100,9 @@ def hessian_vector_product(vector, x, y, task_id, criterion, agent):
     hvp = [(g if g is not None else torch.zeros_like(p)) for g, p in zip(hvp, active_params)]
     return torch.cat([g.contiguous().view(-1) for g in hvp])
 
-
 def matvec(v, x, y, task_id, device, criterion, agent):
     v_tensor = torch.tensor(v, dtype=torch.float32, device=device)
     return hessian_vector_product(v_tensor, x, y, task_id, criterion, agent).cpu().detach().numpy()
-
 
 def compute_Hessian_spectrum(agent, data, criterion, K=10):  
     agent.ready_train()
@@ -120,6 +119,13 @@ def compute_Hessian_spectrum(agent, data, criterion, K=10):
     eigenvectors = np.transpose(eigenvectors)
 
     return eigenvalues[::-1], eigenvectors[::-1] # descending order
+
+def get_Hessian_task(task_id, env, agent, parameters_vec, criterion, N=128, K=10):
+    data = env.init_single_task(task_id, train=True)
+    data_iterator = iter(DataLoader(data, batch_size=N, shuffle=True, num_workers=4))
+    agent.network.assign_weights(parameters_vec)
+    eigenvalues, eigenvectors = compute_Hessian_spectrum(agent, next(data_iterator), criterion, K)
+    return eigenvalues, eigenvectors
 
 def compute_alignment_updates_spectra(task_id, parameters_list, eigenvecs, device):
     L = len(parameters_list)
@@ -191,8 +197,7 @@ def center_gram(gram, unbiased=False):
 
   return gram
 
-
-def cka(gram_x, gram_y, debiased=False):
+def cka_fn(gram_x, gram_y, debiased=False):
   """Compute CKA.
 
   Args:
@@ -214,9 +219,10 @@ def cka(gram_x, gram_y, debiased=False):
   normalization_y = torch.linalg.norm(gram_y)
   return scaled_hsic / (normalization_x * normalization_y)
 
-def compute_CKA(data, agent, parameters_list,  num_batches=5):
-    """ Compute the CKA similarity between the data representations evaluated at different parameter values. 
-   - data is a torch dataloader"""
+def get_features_task(data, agent, parameters_list,  num_batches=5):
+    """Computes the layer-wise feature representation of the data (dataloader) for each parameter value in parameters_list.
+    - data is a torch dataloader
+    - returns a list of dictionaries {layer -> features (NxD)}, one element per parameter value"""
     L = len(parameters_list)
     all_feats = []# L x num_layers x N x D 
     device = agent.config['device']
@@ -242,23 +248,33 @@ def compute_CKA(data, agent, parameters_list,  num_batches=5):
                 else: features[l] = [phi.view(128,-1)] # flatten
         
         all_feats.append(features)
+    return all_feats
 
-    # compute the pairwise CKA at every layer of the network  
-    # Initialize the distance matrices: one for each layer 
-    layers = features.keys()
-    cka_distances = [np.zeros((L, L)) for l in range(len(layers))]
-    for l in layers:
-        for i in range(L): # task i, layer l
-            X_i = torch.cat(all_feats[i][l], dim=0)
-            for j in range(L): # task j, layer l
-                X_j = torch.cat(all_feats[j][l], dim=0)
-                cka_distances[l][i,j] = cka(gram_linear(X_i), gram_linear(X_j))
+def tasks_CKA_evolution(env, agent, parameters_list,  num_batches=5):
+    """ Computes the evolution of the feature representation of every task. It returns a LxL matrix (L= number of tasks), where mat[i,j] is the CKA between the feature representation of task i at parameters 0 and parameters j. 
+    - parameters_list[0] is used as the reference parameter value (better to pass initialization)
+    - data is a torch dataloader"""
+    num_tasks = env.number_tasks
+    cka_distances = []
+    
+    for i in range(num_tasks): 
+        data = env.init_single_task(i, train=False)
+        dataloader = DataLoader(data, batch_size=128, shuffle=True, num_workers=4)
+        task_features = get_features_task(dataloader, agent, parameters_list, num_batches)
+        zero_feats = task_features[0]
+        for j, ij_features in enumerate(task_features[1:]): 
+            for l, phi in ij_features.items():
+                if len(cka_distances) < l+1: 
+                    # initialize the layer CKA matrix
+                    cka_distances.append(torch.zeros((num_tasks, num_tasks)))
+                X_ij = torch.cat(phi, dim=0)
+                X_0 = torch.cat(zero_feats[l], dim=0)
+                cka_distances[l][i,j] = cka_fn(gram_linear(X_ij), gram_linear(X_0))
     
     return cka_distances
 
    
 # computing Linear Mode Connectivity
-
 def linear_interpolation(start, end, agent, dataloader, criterion, line_samples=10, tasks_learned=-1, batches=10, return_type="loss"): 
     """ 
     Computes the loss along a linear path between two parameter vectors.
@@ -283,18 +299,29 @@ def linear_interpolation(start, end, agent, dataloader, criterion, line_samples=
         loss.append(current_loss)
     return loss, line_range
 
-def compute_LMC_all_toall(parameters_list, agent, dataloader, criterion, line_samples=10, tasks_learned=-1, batches=10, return_type="loss"):
+def compute_LMC_all2all(tasks_parameters, agent, env, criterion, line_samples=10, tasks_learned=-1, batches=10, return_type="loss"):
     """ 
     Computes the loss along a linear path between any combination of parameter vectors.
-    - return_type (str): loss or error"""
-    L = len(parameters_list)
-    all_losses = np.zeros((L, L, line_samples+1))
-    for i in range(L):
-        for j in range(i, L):
+    - tasks_parameters: one per task
+    - return_type (str): loss or error
+    - returns a LxLx(line_samples+1) matrix, where mat[i,j,:] is the loss along the linear path between parameters i and j
+    """ 
+
+    num_tasks = env.number_tasks
+    assert len(tasks_parameters) == num_tasks, "Number of parameter values must match the number of tasks"
+    all_losses = np.zeros((num_tasks, num_tasks, line_samples+1))
+    for i in range(num_tasks):
+        data = env.init_single_task(i, train=False)
+        dataloader = DataLoader(data, batch_size=128, shuffle=True, num_workers=4)
+        for j in range(i, num_tasks):
             if i == j: continue
-            l_values, _ = linear_interpolation(parameters_list[i], parameters_list[j], agent, dataloader, criterion, line_samples, tasks_learned, batches, return_type)
-            all_losses[i,j, :] = l_values
+            l_values, _ = linear_interpolation(tasks_parameters[i], tasks_parameters[j], agent, dataloader, criterion, line_samples, tasks_learned, batches, return_type)
+            all_losses[i,j,:] = l_values
     return all_losses
 
 def compute_Fisher():
     raise NotImplementedError
+
+
+
+

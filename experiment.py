@@ -2,7 +2,6 @@ import logging
 import os
 import sys
 
-from evaluation import evaluate_agent_all_tasks_env, evaluate_agent_task
 
 # Add project_dir to the Python path - necessary to solve relative imports
 project_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
@@ -10,9 +9,10 @@ sys.path.insert(0, project_dir)
 
 import numpy as np
 import matplotlib.pyplot as plt
-from environments import ClearWorld, MixedPermutationWorld, MultiDatasetsWorld, PermutationWorld, LabelShufflingWorld, get_environment_from_name
+from environments import get_environment_from_name
 from agents import get_agent_class_from_name
 from utils import *
+from evaluation import *
 import torch
 import torch.nn as nn
 from torch.utils.data.dataloader import DataLoader
@@ -20,12 +20,6 @@ from datetime import datetime
 import pprint
 from hyperparameters import agent_hyperparameters
 import argparse
-import random
-import string
-
-def random_string(length=8):
-    letters = string.ascii_lowercase
-    return ''.join(random.choice(letters) for i in range(length))
 
 LOG_FILE = 'experiments.json'
 NUM_WORKERS = 8
@@ -158,6 +152,9 @@ experiment_logger = ExperimentLogger(args.exp_id, timestamp, experiment_name, lo
 
 # Training loop
 t = 0
+parameters_path = [get_params(agent.network)] # add initialization
+if checkpoint_freq>0: experiment_logger.save_checkpoint(agent, "init", 0) # save initialization
+
 for current_task, steps in enumerate(experiment_config['steps_per_task']):
     # before starting the task 
     current_env_name = env_names[current_task]
@@ -169,6 +166,7 @@ for current_task, steps in enumerate(experiment_config['steps_per_task']):
         train_data = env.init_multi_task(number_of_tasks=current_task+1, train=True)
     else: train_data = env.init_single_task(task_number=current_task, train=True)
     if replay_on and current_task>0: 
+        # adjust the batch size and initialise the buffer data
         batch_size, batch_size_replay, total_replay_tasks = agent.calculate_task_batchsize(current_task) # balanced replay,every task gets the same amount of data in 
         initial_task = current_task-total_replay_tasks
         print(f"Using batch sizes: {batch_size} (new) and {batch_size_replay} (old) for {total_replay_tasks} tasks")
@@ -186,6 +184,7 @@ for current_task, steps in enumerate(experiment_config['steps_per_task']):
     for step in range(steps): 
 
         agent.ready_train() 
+        # current task data
         try: data_point = next(train_data_iterator) 
         except StopIteration: 
                 # re-initialise train iterator
@@ -193,7 +192,7 @@ for current_task, steps in enumerate(experiment_config['steps_per_task']):
                 data_point = next(train_data_iterator) 
         if not replay_on or current_task==0: 
                 train_loss, train_error = agent.update_one_step(data_point, current_task= current_task)
-        else: 
+        else: # add replay 
             try: buffer_data_point = next(buffer_data_iterator)
             except StopIteration: 
                 buffer_data_iterator = iter(DataLoader(buffer_data, batch_size=batch_size_replay*(total_replay_tasks), shuffle=True))
@@ -225,7 +224,9 @@ for current_task, steps in enumerate(experiment_config['steps_per_task']):
 
         t+=1
         
-    #TODO do end of task evaluations 
+    # do end of task evaluations 
+    end_of_task_parameters = get_params(agent.network)
+    parameters_path.append(end_of_task_parameters)
     # evaluate performance on all other tasks (forward and backward transfer)
     res_env = evaluate_agent_all_tasks_env(batches_eval, agent, env, train=False, ntasks_observed=current_task)
     experiment_logger.log_named_metrics(res_env, "transfer", current_task)
@@ -233,9 +234,22 @@ for current_task, steps in enumerate(experiment_config['steps_per_task']):
 
 logging.info("Training completed")
 #produce final metrics and log 
-# average/offline evaluation 
 all_data = env.init_multi_task(number_of_tasks=-1, train=False) # same test data for both agents
-data_iterator = iter(DataLoader(all_data, batch_size=128, shuffle=True, num_workers=8)) 
+multi_task = DataLoader(all_data, batch_size=128, shuffle=True, num_workers=8) 
+# average/offline evaluation 
+data_iterator = iter(multi_task)
 # average environment evaluation
 res = evaluate_agent_task(10, agent, data_iterator, eval_criterion, ntasks_observed=-1)
+
+# additional evaluations (distance matrices, CKA, LMC, Hessian)
+l2_mat, cosine_mat = get_distance_minima(parameters_path)
+cka_distance_mats = tasks_CKA_evolution(env, agent, parameters_path, num_batches=batches_eval) # a list of layer-wise feature evolution matrices (task data x task number)
+LMC_matrices = compute_LMC_all2all(parameters_path[1:], env, eval_criterion, line_samples=10, tasks_learned=-1, batches=batches_eval, return_type="loss") # (num_tasks, num_tasks, line_samples+1) matrix
+for i in range(number_tasks):
+    eigval, eigvec = get_Hessian_task(i, env, agent, parameters_path[i+1], eval_criterion, N=128, K=10)
+    if i==0: 
+        all_alignments, random_alignments = compute_alignment_updates_spectra(0, parameters_path[1:], eigvec, device)
+#TODO: save everything and make plots.
+
+
 experiment_logger.close(res)
