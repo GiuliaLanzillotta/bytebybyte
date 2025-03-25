@@ -3,6 +3,7 @@ Script with all evaluation functionalities.
 """
 
 import argparse
+import pprint
 import copy
 import json
 import os
@@ -387,12 +388,14 @@ if __name__ == "__main__":
     end_results = data[0]["end_results"]
     for key, value in end_results.items():
         config_df[key] = value
-    print(acf)
+    pprint.pprint(acf)
 
     # Setup the agent, experiment logger, environment
     agent_class, _ = get_agent_class_from_name(acf.agent_type)
     agent = agent_class(**acf)
     agent_config = agent.config
+    acf.number_tasks = acf.num_tasks
+    acf.split_type = "classes" if "classes" in acf.environment else "chunks"
     experiment_logger = ExperimentLogger(acf.exp_id, acf.exp_timestamp, acf.exp_name, config=agent_config)
     env, environment_name = get_environment_from_name(acf.environment, acf)
     batches_eval = env.batches_eval
@@ -421,8 +424,12 @@ if __name__ == "__main__":
 
     all_minima = []
     # adding initialization if present
-    agent = experiment_logger.load_checkpoint(agent, "init", 0)
+    try: 
+        agent = experiment_logger.load_checkpoint(agent, "init", 0)
+    except FileNotFoundError:
+        print("No initialization found. Adding the new one.")
     all_minima.append(get_params(agent.network).to(device))
+    # adding checkpoints
     for i in range(num_tasks):
         agent = experiment_logger.load_checkpoint(agent, i)
         all_minima.append(get_params(agent.network).to(device))

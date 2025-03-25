@@ -50,7 +50,7 @@ def get_params(net):
     # Concatenate the list to a single tensor
     params_vector = torch.cat(params_list)
 
-    return params_vector
+    return params_vector.detach().clone()
 
 def seed_everything(seed=42):
     random.seed(seed)
@@ -190,16 +190,16 @@ class AgentLogger:
         """
         # Log summary stats if provided
         if end_results:
-            logging.info(f"Final evaluation {self.agent_type} Agent: {final_res}")
+            logging.info(f"Final evaluation {self.agent_type} Agent: {end_results}")
 
             # Log to external JSON file
-            self.current_experiment['end_results'] = final_res
+            self.current_experiment['end_results'] = end_results
 
 
         # Close WandB
         if wandb.run is not None:
             # we need to add the agent_name suffix
-            wandb.log(final_res)
+            wandb.log(end_results)
     
 
 
