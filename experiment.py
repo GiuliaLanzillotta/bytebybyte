@@ -240,16 +240,44 @@ multi_task = DataLoader(all_data, batch_size=128, shuffle=True, num_workers=8)
 data_iterator = iter(multi_task)
 # average environment evaluation
 res = evaluate_agent_task(10, agent, data_iterator, eval_criterion, ntasks_observed=-1)
+# renaming the keys before logging
+final_res = {}
+for k,v in res.items():
+    final_res[f'{k}_end'] = v
+# # ------------------------------------------------------------
+# # additional evaluations (distance matrices, CKA, LMC, Hessian)
+# print("Additional evaluations...")
+# l2_mat, cosine_mat = get_distance_minima(parameters_path)
+# experiment_logger.log_matrix(l2_mat, "l2_distance", plot=True, title="L2 distances", xaxis="Task (checkpoint)", yaxis="Task (checkpoint)")
+# experiment_logger.log_matrix(cosine_mat, "cosine_sim", plot=True, title="Cosine similarity", xaxis="Task (checkpoint)", yaxis="Task (checkpoint)")
+# final_res["average_l2"] = l2_mat.mean()
+# final_res["average_cosine"] = cosine_mat.mean()
+# cka_distance_mats = tasks_CKA_evolution(env, agent, parameters_path, num_batches=batches_eval) # a list of layer-wise feature evolution matrices (task data x task number)
+# for l, mat in enumerate(cka_distance_mats):
+#     # saving and plotting CKA distances 
+#     experiment_logger.log_matrix(mat, f"cka_distance_layer_{l}")
+#     experiment_logger.plot_lines(mat, title=f"CKA evolution Layer {l}", xaxis="Task (checkpoint)", yaxis=f"CKA similarity to learned features", name=f"cka_distance_layer_{l}", lbl_names=f"Task")
 
-# additional evaluations (distance matrices, CKA, LMC, Hessian)
-l2_mat, cosine_mat = get_distance_minima(parameters_path)
-cka_distance_mats = tasks_CKA_evolution(env, agent, parameters_path, num_batches=batches_eval) # a list of layer-wise feature evolution matrices (task data x task number)
-LMC_matrices = compute_LMC_all2all(parameters_path[1:], env, eval_criterion, line_samples=10, tasks_learned=-1, batches=batches_eval, return_type="loss") # (num_tasks, num_tasks, line_samples+1) matrix
-for i in range(number_tasks):
-    eigval, eigvec = get_Hessian_task(i, env, agent, parameters_path[i+1], eval_criterion, N=128, K=10)
-    if i==0: 
-        all_alignments, random_alignments = compute_alignment_updates_spectra(0, parameters_path[1:], eigvec, device)
-#TODO: save everything and make plots.
+# LMC_matrices = compute_LMC_all2all(parameters_path[1:], agent, env, eval_criterion, line_samples=10, batches=batches_eval, return_type="loss") # (num_tasks, num_tasks, line_samples+1) matrix
+# experiment_logger.log_matrix(LMC_matrices, f"LMC_all_tasks")
+# # plot the LMC from the first task to all other tasks
+# experiment_logger.plot_lines(LMC_matrices[0,:,:], title=f"LMC Task 0", xaxis="Interpolation", yaxis=f"Validation Loss Task {l}", name=f"LMC_task_0", lbl_names=f"{l+1} -", ylim=(0.0,5.0))
+
+# # Hessian computation
+# for i in range(number_tasks):
+#     eigval, eigvec = get_Hessian_task(i, env, agent, parameters_path[i+1], eval_criterion, N=128, K=10)
+#     experiment_logger.log_matrix(eigval, f"eigval_task_{i}")
+#     experiment_logger.log_matrix(eigvec, f"eigvec_task_{i}")
+#     experiment_logger.plot_lines(eigval.reshape(-1, 1), title=f"Spectrum Task {i}", xaxis="Index", yaxis=f"Eigenvalue", name=f"Spectrum_task{l}", lbl_names="no")
+#     # plotting eigval
+#     if i==0: 
+#         all_alignments, random_alignments = compute_alignment_updates_spectra(0, parameters_path[1:], eigvec, device)
+#         avg_alignment = np.mean(all_alignments)
+#         random_avg_alignment = np.mean(random_alignments)
+#         final_res["average_alignment"] = avg_alignment
+#         final_res["random_alignment"] = random_avg_alignment
+#         # plotting alignments 
+#         experiment_logger.plot_lines(all_alignments, title="Cosine Similarity of Task Displacement with Eigenvectors", xaxis="Eigenvector index", yaxis="Alignment", name="alignments", lbl_names="Displacement Task")
 
 
-experiment_logger.close(res)
+experiment_logger.close(final_res)

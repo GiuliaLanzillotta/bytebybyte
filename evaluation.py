@@ -2,14 +2,21 @@
 Script with all evaluation functionalities.
 """
 
+import argparse
 import copy
+import json
+import os
 import numpy as np
+import pandas as pd
 import torch
 from torch.utils.data.dataloader import DataLoader
 from scipy.sparse.linalg import LinearOperator, eigsh
 
 
-from utils import get_cosine_similarity, get_norm_distance, has_batch_norm
+from agents import get_agent_class_from_name
+from environments import get_environment_from_name
+from utils import ExperimentLogger, dotdict, get_cosine_similarity, get_norm_distance, get_params, has_batch_norm, seed_everything
+from viz_utils import *
 
 
 
@@ -122,8 +129,11 @@ def compute_Hessian_spectrum(agent, data, criterion, K=10):
 
 def get_Hessian_task(task_id, env, agent, parameters_vec, criterion, N=128, K=10):
     data = env.init_single_task(task_id, train=True)
-    data_iterator = iter(DataLoader(data, batch_size=N, shuffle=True, num_workers=4))
+    dataloader = DataLoader(data, batch_size=N, shuffle=True, num_workers=4)
+    data_iterator = iter(dataloader)
     agent.network.assign_weights(parameters_vec)
+    if has_batch_norm(agent.network): 
+        torch.optim.swa_utils.update_bn(iter(dataloader), agent.network, agent.config['device'])
     eigenvalues, eigenvectors = compute_Hessian_spectrum(agent, next(data_iterator), criterion, K)
     return eigenvalues, eigenvectors
 
@@ -219,6 +229,16 @@ def cka_fn(gram_x, gram_y, debiased=False):
   normalization_y = torch.linalg.norm(gram_y)
   return scaled_hsic / (normalization_x * normalization_y)
 
+
+def get_samples_data(dataloader, num_batches=5): 
+    samples = []
+    for i, batch in enumerate(dataloader): 
+        x, y, t = batch
+        samples.append(x)
+        if i == num_batches: 
+            break
+    return torch.cat(samples, dim=0)
+
 def get_features_task(data, agent, parameters_list,  num_batches=5):
     """Computes the layer-wise feature representation of the data (dataloader) for each parameter value in parameters_list.
     - data is a torch dataloader
@@ -227,17 +247,22 @@ def get_features_task(data, agent, parameters_list,  num_batches=5):
     all_feats = []# L x num_layers x N x D 
     device = agent.config['device']
 
+    # fix a sample of data
+    samples = get_samples_data(data, num_batches=num_batches)
+
     for i in range(L): # looping through parameter values 
         agent.network.assign_weights(parameters_list[i])
+        agent.config['device'] = device
+        if has_batch_norm(agent.network): 
+            torch.optim.swa_utils.update_bn(iter(data), agent.network, device)
 
         # for each parameter value we have a dictionary of {layer -> features}
-        features={}; total=0
+        features={}
 
-        for x, _, _ in data: 
-            if total >= num_batches: break
-            agent.ready_eval()
+        for i in range(num_batches): 
+            x = samples[i*128:(i+1)*128]
             x = x.to(device)
-            total+=1
+            agent.ready_eval()
 
             with torch.no_grad():
                 feats, _ = agent.network.get_features(x, return_intermediate=True)
@@ -261,15 +286,16 @@ def tasks_CKA_evolution(env, agent, parameters_list,  num_batches=5):
         data = env.init_single_task(i, train=False)
         dataloader = DataLoader(data, batch_size=128, shuffle=True, num_workers=4)
         task_features = get_features_task(dataloader, agent, parameters_list, num_batches)
-        zero_feats = task_features[0]
+        zero_feats = task_features[i+1]
         for j, ij_features in enumerate(task_features[1:]): 
             for l, phi in ij_features.items():
                 if len(cka_distances) < l+1: 
                     # initialize the layer CKA matrix
                     cka_distances.append(torch.zeros((num_tasks, num_tasks)))
                 X_ij = torch.cat(phi, dim=0)
-                X_0 = torch.cat(zero_feats[l], dim=0)
-                cka_distances[l][i,j] = cka_fn(gram_linear(X_ij), gram_linear(X_0))
+                X_ii = torch.cat(zero_feats[l], dim=0)
+                cka_distances[l][i,j] = cka_fn(gram_linear(X_ij), gram_linear(X_ii))
+
     
     return cka_distances
 
@@ -284,7 +310,6 @@ def linear_interpolation(start, end, agent, dataloader, criterion, line_samples=
 
   
     direction = end - start
-    print(direction.max())
 
     device = agent.config['device']
     
@@ -323,5 +348,115 @@ def compute_Fisher():
     raise NotImplementedError
 
 
+if __name__ == "__main__":
+    
+    parser = argparse.ArgumentParser(description="Input parameters from the command line.")
+    # COMMAND LINE ARGUMENTS 
+    # experiment setup arguments
+    parser.add_argument('--experiment_name', type=str, required=True, help='Name of the experiment to evaluate (string)')
+    parser.add_argument('--device', type=int, required=True, help='Device identifier (integer).')
+    parser.add_argument('--transfer_matrix', action='store_true', help='Make transfer matrix plot.')
+    parser.add_argument('--transfer_line', action='store_true', help='Make transfer line plot.')
+    parser.add_argument('--distances', action='store_true', help='Compute distances in parameter space (L2, cosine).')
+    parser.add_argument('--cka', action='store_true', help='Compute CKA.')
+    parser.add_argument('--lmc', action='store_true', help='Compute LMC.')
+    parser.add_argument('--hessian', action='store_true', help='Compute Hessian spectrum and alignments.')
+    # Parse the arguments
+    args = parser.parse_args()
 
 
+    # Setup 
+    exp_name = args.experiment_name
+    device = args.device
+    device = device if torch.cuda.is_available() else "cpu"
+    print(f"Using device: {device}")
+
+
+    # Load the experiment config 
+    directory = f"experiments/{exp_name}/results"
+    with open(os.path.join(directory, "experiments.json"), "r") as file:
+        data = json.load(file)
+
+    # Extract the "config" dictionary and save it into a pandas dataframe
+    config_df = pd.DataFrame([data[0]["config"]])
+    acf = dotdict(config_df.iloc[0])
+    seed = acf.seed
+    acf.device = device
+    seed_everything(seed)
+    # Add the "end_results" dictionary to the dataframe
+    end_results = data[0]["end_results"]
+    for key, value in end_results.items():
+        config_df[key] = value
+    print(acf)
+
+    # Setup the agent, experiment logger, environment
+    agent_class, _ = get_agent_class_from_name(acf.agent_type)
+    agent = agent_class(**acf)
+    agent_config = agent.config
+    experiment_logger = ExperimentLogger(acf.exp_id, acf.exp_timestamp, acf.exp_name, config=agent_config)
+    env, environment_name = get_environment_from_name(acf.environment, acf)
+    batches_eval = env.batches_eval
+    eval_criterion = env.criterion
+    num_classes_per_task = env.num_classes_per_task 
+    num_classes_total = env.num_classes
+
+    if args.transfer_matrix or args.transfer_line: 
+        # Load the "transfer" dictionary
+        transfer_dict = data[0]["transfer"]
+        # Initialize the matrix
+        num_tasks = len(transfer_dict)
+        
+        matrix = np.zeros((num_tasks, num_tasks))
+        # Populate the matrix
+        for i in range(num_tasks):
+            for j in range(num_tasks):
+                # removing from 1 to get accuracy rather than error
+                matrix[i, j] = 1- transfer_dict[str(i)][str(j)]['test_error']
+        
+        if args.transfer_matrix: 
+            viz_heatmap(matrix, "Transfer", "Target Task", "Source Task", os.path.join(directory, "transfer_matrix.pdf"))
+        
+        if args.transfer_line: 
+            viz_lineplots(matrix, "Transfer", "Target Task", "Test Accuracy", os.path.join(directory, "transfer_line.pdf"), lbl_names="Task")
+
+    all_minima = []
+    # adding initialization if present
+    agent = experiment_logger.load_checkpoint(agent, "init", 0)
+    all_minima.append(get_params(agent.network).to(device))
+    for i in range(num_tasks):
+        agent = experiment_logger.load_checkpoint(agent, i)
+        all_minima.append(get_params(agent.network).to(device))
+    agent.config['device']=device
+
+    if args.distances:
+        l2_mat, cosine_mat = get_distance_minima(all_minima)
+        experiment_logger.log_matrix(l2_mat, "l2_distance", plot=True, title="L2 distances", xaxis="Task (checkpoint)", yaxis="Task (checkpoint)")
+        experiment_logger.log_matrix(cosine_mat, "cosine_sim", plot=True, title="Cosine similarity", xaxis="Task (checkpoint)", yaxis="Task (checkpoint)")
+        
+    if args.cka:
+        cka_distance_mats = tasks_CKA_evolution(env, agent, all_minima, num_batches=batches_eval) # a list of layer-wise feature evolution matrices (task data x task number)
+        for l, mat in enumerate(cka_distance_mats):
+            # saving and plotting CKA distances 
+            experiment_logger.log_matrix(mat, f"cka_distance_layer_{l}")
+            experiment_logger.plot_lines(mat, title=f"CKA evolution Layer {l}", xaxis="Task (checkpoint)", yaxis=f"CKA similarity to learned features", name=f"cka_distance_layer_{l}", lbl_names=f"Task")
+
+    if args.lmc:
+        LMC_matrices = compute_LMC_all2all(all_minima[1:], agent, env, eval_criterion, line_samples=10, batches=batches_eval, return_type="loss") # (num_tasks, num_tasks, line_samples+1) matrix
+        experiment_logger.log_matrix(LMC_matrices, f"LMC_all_tasks")
+        # plot the LMC from the first task to all other tasks
+        experiment_logger.plot_lines(LMC_matrices[0,:,:], title=f"LMC Task 0", xaxis="Interpolation", yaxis=f"Validation Loss Task {l}", name=f"LMC_task_0", lbl_names=f"{l+1} -", ylim=(0.0,5.0))
+
+    if args.hessian:    # Hessian computation
+        for i in range(num_tasks):
+            eigval, eigvec = get_Hessian_task(i, env, agent, all_minima[i+1], eval_criterion, N=128, K=10)
+            experiment_logger.log_matrix(eigval, f"eigval_task_{i}")
+            experiment_logger.log_matrix(eigvec, f"eigvec_task_{i}")
+            experiment_logger.plot_lines(eigval.reshape(-1, 1), title=f"Spectrum Task {i}", xaxis="Index", yaxis=f"Eigenvalue", name=f"Spectrum_task{l}", lbl_names="no")
+            # plotting eigval
+            if i==0: 
+                all_alignments, random_alignments = compute_alignment_updates_spectra(0, all_minima[1:], eigvec, device)
+                # plotting alignments 
+                experiment_logger.plot_lines(all_alignments, title="Cosine Similarity of Task Displacement with Eigenvectors", xaxis="Eigenvector index", yaxis="Alignment", name="alignments", lbl_names="Displacement Task")
+
+
+    print("Evaluation completed.")

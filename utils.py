@@ -11,6 +11,20 @@ import numpy as np
 import torch
 import glob
 import random
+import string
+
+from viz_utils import *
+
+class dotdict(dict):
+    """dot.notation access to dictionary attributes"""
+    __getattr__ = dict.get
+    __setattr__ = dict.__setitem__
+    __delattr__ = dict.__delitem__
+
+
+def random_string(length=8):
+    letters = string.ascii_lowercase
+    return ''.join(random.choice(letters) for i in range(length))
 
 
 def has_batch_norm(net):
@@ -176,11 +190,6 @@ class AgentLogger:
         """
         # Log summary stats if provided
         if end_results:
-            # create summary statistics 
-            # renaming the keys before logging
-            final_res = {}
-            for k,v in end_results.items():
-                final_res[f'{k}_end'] = v
             logging.info(f"Final evaluation {self.agent_type} Agent: {final_res}")
 
             # Log to external JSON file
@@ -280,7 +289,51 @@ class ExperimentLogger:
         agent = self.agent_logger.load_checkpoint(agent, directory, task_to_load, step)
         return agent
 
-    
+    def log_matrix(self, mat, name, plot=False, title=None, xaxis=None, yaxis=None): 
+        """ name is not the full path, just the name of the matrix (without extension)"""
+        # Ensure the results directory exists
+        results_dir = f'{self.exp_directory}results/'
+        os.makedirs(results_dir, exist_ok=True)
+
+        # Convert torch tensor to numpy array if needed
+        if isinstance(mat, torch.Tensor):
+            mat = mat.cpu().numpy()
+
+        # Save the numpy matrix to a file
+        full_path = os.path.join(results_dir, f"{name}.npy")
+        print(f"Saving the {name} matrix to ", full_path)
+        np.save(full_path, mat)
+
+        if plot: 
+            self.plot_matrix(mat, title, xaxis, yaxis, name)
+
+    def plot_matrix(self, mat, title, xaxis, yaxis, filename):
+        """ filename is not the full path, just the name of the figure (without extension)"""
+        results_dir = f'{self.exp_directory}results/'
+        os.makedirs(results_dir, exist_ok=True)
+
+        full_path = os.path.join(results_dir, f"{filename}.pdf")
+        print(f"Saving the -{filename}- heatmap to ", full_path)
+        
+        # Convert torch tensor to numpy array if needed
+        if isinstance(mat, torch.Tensor):
+            mat = mat.cpu().numpy()
+
+        viz_heatmap(mat, title, xaxis, yaxis, full_path)
+
+    def plot_lines(self, mat, title, xaxis, yaxis, name, lbl_names=None, ylim=None):
+        """ name is not the full path, just the name of the figure (without extension)"""
+        results_dir = f'{self.exp_directory}results/'
+        os.makedirs(results_dir, exist_ok=True)
+
+        full_path = os.path.join(results_dir, f"{name}.pdf")
+        print(f"Saving the -{name}- lineplot to ", full_path)
+
+        # Convert torch tensor to numpy array if needed
+        if isinstance(mat, torch.Tensor):
+            mat = mat.cpu().numpy()
+
+        viz_lineplots(mat, title, xaxis, yaxis, full_path, lbl_names=lbl_names, ylim=ylim)
 
     def close(self, end_results=None):
         """

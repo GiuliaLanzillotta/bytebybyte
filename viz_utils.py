@@ -28,7 +28,7 @@ def viz_heatmap(matrix, title, xaxis, yaxis, savepath):
     fig.savefig(savepath, dpi=200, bbox_inches='tight')
     plt.close()
 
-def viz_lineplots(matrix, title, xaxis, yaxis, savepath, lbl_names=None):
+def viz_lineplots(matrix, title, xaxis, yaxis, savepath, lbl_names=None, ylim=None):
     increase_factor = len(matrix) // 10
     # Set annotation font size and color
     annot_kws = {"size": 5}
@@ -39,13 +39,18 @@ def viz_lineplots(matrix, title, xaxis, yaxis, savepath, lbl_names=None):
     # Plot the heatmap
     fig, ax = plt.subplots(figsize=(6*increase_factor, 3*increase_factor), dpi=200)
     for i in range(num_samples):
-        sns.lineplot(x=range(seq_len), y=matrix[i,:], color=palette[i], label=f"{lbl_names} {i+1}", marker='o')
+        if lbl_names == "no": 
+            label=None
+        else: label = label=f"{lbl_names} {i+1}"
+        sns.lineplot(x=range(seq_len), y=matrix[i,:], color=palette[i], label=label, marker='o')
     
     ax.grid(True, which='both', linestyle='--', linewidth=0.5)
     ax.set_title(title)
     ax.set_xlabel(xaxis)
     ax.set_ylabel(yaxis)
-    ax.legend(loc='upper center', bbox_to_anchor=(0.5, 1.25), ncol=5, fontsize='small')
+
+    if ylim is not None: ax.set_ylim(ylim)
+    ax.legend(loc='upper center', bbox_to_anchor=(0.5, 1.3), ncol=5, fontsize='small')
 
     fig.savefig(savepath, dpi=200, bbox_inches='tight')
     plt.close()

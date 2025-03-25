@@ -894,7 +894,7 @@ def get_environment_from_name(env_name, args):
         env = MultiDatasetsWorld(num_classes=10, augment=True) 
     elif env_name=="mixedpermuted": 
         env = MixedPermutationWorld(number_tasks=args.number_tasks, num_switches=5) 
-    elif env_name=="split": 
+    elif "split" in env_name: 
         env = SplitWorld(split_type=args.split_type, number_tasks=args.number_tasks, randomize_class_order=False) #follow a sequential order
         env_name = f"split-c100-{args.split_type}-{args.number_tasks}"
     else: raise NotImplementedError
