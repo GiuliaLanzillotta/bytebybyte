@@ -1,7 +1,7 @@
 source clenv/bin/activate
 
 
-python experiment.py --device $1 --steps_per_task 1000 --number_tasks 10 --environment split --split_type classes --exp_id exp2 --checkpoint_freq 1000 --network_name resnet18 --agent_type base --wandb-project order2-approximations --multihead --experiment_type multitask
+python experiment.py --device 1 --steps_per_task 1000 --number_tasks 10 --environment split --split_type classes --exp_id exp2-trackoutputs --checkpoint_freq 1000 --network_name resnet18 --agent_type base --wandb-project order2-approximations --multihead --experiment_type multitask  --track_outputs
 
 
 python experiment.py --device $1 --steps_per_task 1000 --number_tasks 10 --environment split --split_type classes --exp_id exp2 --checkpoint_freq 1000 --network_name resnet18 --agent_type base --wandb-project order2-approximations --multihead --experiment_type multitask

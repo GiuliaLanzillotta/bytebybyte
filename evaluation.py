@@ -41,10 +41,13 @@ class FunctionTracker:
             self.outputs = []
             self.task_info = []
             self.step = 0
-            for i in range(self.num_samples_per_task):
-                x, y, t = next(train_data_iterator)
+            total = 0
+            for data in train_data_iterator:
+                if total >= self.num_samples_per_task: break
+                x, y, t = data
                 x = x.to(self.device)
                 self.inputs.append((x, y, t))
+                total += len(y)
             
         
         def compute_outputs(self, agent):
