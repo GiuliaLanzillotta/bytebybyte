@@ -7,3 +7,4 @@ wandb
 credentials.py
 *.png
 figures
+temp.sh

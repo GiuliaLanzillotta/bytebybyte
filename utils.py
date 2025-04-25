@@ -33,7 +33,7 @@ def has_batch_norm(net):
     return False
 
 def get_norm_distance(m1, m2):
-    return torch.norm(m1-m2, 2).item()
+    return torch.linalg.norm(m1-m2, 2).item()
 
 def get_cosine_similarity(m1, m2):
     cosine = torch.nn.CosineSimilarity(dim=0, eps=1e-6)
@@ -205,7 +205,7 @@ class AgentLogger:
 
 class ExperimentLogger:
 
-    def __init__(self, exp_id, exp_timestamp, exp_name, log_to_file=False, external_json_file=None, log_wandb=False, wandb_project = None, config=None):
+    def __init__(self, exp_id, exp_timestamp, exp_name, log_to_file=False, external_json_file=None, log_wandb=False, wandb_project = None, config=None, log_outputs=False):
         """
         Initialize the logger with options for optional file logging (with timestamp), external JSON logging, and WandB.
         This logger tracks the experiment with two agents. 
@@ -222,6 +222,7 @@ class ExperimentLogger:
         agent_logger_class = AgentLogger 
         self.exp_directory = f"./experiments/{exp_name}-{exp_id}-{exp_timestamp}/"
         os.makedirs(self.exp_directory, exist_ok=True)
+        self.log_outputs = log_outputs
 
         # Setup file logging if enabled
         if log_to_file:
@@ -245,6 +246,11 @@ class ExperimentLogger:
             self.console = logging.StreamHandler()
             self.console.setFormatter(logging.Formatter('%(asctime)s - %(message)s'))
             logging.getLogger().addHandler(self.console)
+
+        if log_outputs:
+            # Setup file logging for outputs
+            os.makedirs(f'{self.exp_directory}/logs', exist_ok=True)
+
 
         # Setup Agents logger  
         self.agent_logger = agent_logger_class(config['agent_type'], exp_id, config=config)
@@ -278,7 +284,6 @@ class ExperimentLogger:
         """
         self.agent_logger.log_named_metrics(metrics, name, current_task)
 
-    
     def save_checkpoint(self, agent, current_task, step):
         directory = f'{self.exp_directory}/checkpoints/'
         os.makedirs(directory, exist_ok=True)
@@ -288,6 +293,17 @@ class ExperimentLogger:
         directory = f'{self.exp_directory}/checkpoints/'
         agent = self.agent_logger.load_checkpoint(agent, directory, task_to_load, step)
         return agent
+
+    def log_outputs(self, outputs, task_info,  current_task):
+        """ Outputs is a tensor of size #num_steps x #num_samples x #out_dim. 
+            task_info is a list with the task index for each sample."""
+        filename = f'{self.exp_directory}/logs/outputs_task{current_task}.pt'
+        print(f"Saving the outputs to ", filename)
+        torch.save({
+            "outputs": outputs,
+            "task_info": task_info,
+            "task_index": current_task,
+        }, filename)
 
     def log_matrix(self, mat, name, plot=False, title=None, xaxis=None, yaxis=None): 
         """ name is not the full path, just the name of the matrix (without extension)"""

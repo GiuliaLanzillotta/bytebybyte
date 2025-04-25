@@ -42,7 +42,7 @@ def viz_lineplots(matrix, title, xaxis, yaxis, savepath, lbl_names=None, ylim=No
         if lbl_names == "no": 
             label=None
         else: label = label=f"{lbl_names} {i+1}"
-        sns.lineplot(x=range(seq_len), y=matrix[i,:], color=palette[i], label=label, marker='o')
+        sns.lineplot(x=range(seq_len), y=matrix[i,:], color=palette[i], label=label, marker='o', linewidth=1, markersize=6)
     
     ax.grid(True, which='both', linestyle='--', linewidth=0.5)
     ax.set_title(title)

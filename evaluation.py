@@ -20,6 +20,54 @@ from utils import ExperimentLogger, dotdict, get_cosine_similarity, get_norm_dis
 from viz_utils import *
 
 
+class FunctionTracker:
+        """ Class to track the function values during training. 
+        It offers two functions, one to add new inputs to the set of trackes inputs (to be called at the beginning of a task), and one to compute and store the outputs."""
+
+        def __init__(self, num_samples_per_task, device, logger):
+            self.num_samples_per_task = num_samples_per_task
+            self.device = device
+            self.logger = logger
+            self.inputs = []
+            self.step = 0
+            self.task = 0
+
+        
+        def add_inputs(self, train_data_iterator):
+            """ Adds the inputs to the list of tracked inputs. 
+            - train_data_iterator: iterator over the training data
+            - task_id: id of the task"""
+            #reset and add new inputs
+            self.outputs = []
+            self.task_info = []
+            self.step = 0
+            for i in range(self.num_samples_per_task):
+                x, y, t = next(train_data_iterator)
+                x = x.to(self.device)
+                self.inputs.append((x, y, t))
+            
+        
+        def compute_outputs(self, agent):
+            """ Computes the outputs of the function for the tracked inputs. 
+            - agent: agent to use for computing the outputs
+            - ntasks_observed: number of tasks observed so far"""
+            step_outputs = []
+            for i, (x, y, t) in enumerate(self.inputs):
+                with torch.no_grad():
+                    out, y = agent.predict((x, y, t))
+                    #log the outputs to file
+                    step_outputs.append(out.detach())
+                    if self.step==0: self.task_info.append(t)
+            self.outputs.append(torch.cat(step_outputs, dim=0))
+            if self.step==0: self.task_info = torch.cat(self.task_info, dim=0)
+            self.step+=1
+        
+        def log_outputs(self):
+            """ To be called at the end of the task"""
+            self.logger.log_outputs(self.outputs, self.task_info,  self.task)
+            self.task += 1 
+                    
+        
 
 def evaluate_agent_all_tasks_env(num_batches, agent, env, train=False, eval_criterion=None, ntasks_observed=-1):
     """Evaluates the agent on all tasks in the environment."""
@@ -153,8 +201,23 @@ def compute_alignment_updates_spectra(task_id, parameters_list, eigenvecs, devic
         random_alignments[i,:] =  [torch.nn.functional.cosine_similarity(random_vector, torch.Tensor(v).to(device), dim=0).item() for v in eigenvecs]
     return all_alignments, random_alignments
 
-
-
+def compute_alignment_updates_spectra_norm(task_id, parameters_list, eigenvecs, device):
+    L = len(parameters_list)
+    K = eigenvecs.shape[0] # eigenvectors on the rows
+    all_alignments = np.zeros((L, K))
+    random_alignments = np.zeros((L, K))
+    norms = np.zeros((L, 2))
+    start = parameters_list[task_id] # starting value
+    for i in range(L):
+        end = parameters_list[i] # ending value 
+        direction = end - start
+        random_vector = torch.randn_like(direction)
+        all_alignments[i,:] = [torch.nn.functional.cosine_similarity(direction, torch.Tensor(v).to(device), dim=0).item() for v in eigenvecs]
+        # compute random alignments for baseline
+        random_alignments[i,:] =  [torch.nn.functional.cosine_similarity(random_vector, torch.Tensor(v).to(device), dim=0).item() for v in eigenvecs]
+        norms[i, 0] = (torch.norm(direction)**2).item() 
+        norms[i, 1] = norms[i, 0] * (all_alignments[i, :]**2).sum()
+    return all_alignments, random_alignments, norms
 
 
 # Inspired by https://github.com/google-research/google-research/blob/master/representation_similarity/Demo.ipynb 
@@ -395,6 +458,7 @@ if __name__ == "__main__":
     agent = agent_class(**acf)
     agent_config = agent.config
     acf.number_tasks = acf.num_tasks
+    num_tasks = acf.number_tasks
     acf.split_type = "classes" if "classes" in acf.environment else "chunks"
     experiment_logger = ExperimentLogger(acf.exp_id, acf.exp_timestamp, acf.exp_name, config=agent_config)
     env, environment_name = get_environment_from_name(acf.environment, acf)
@@ -406,8 +470,6 @@ if __name__ == "__main__":
     if args.transfer_matrix or args.transfer_line: 
         # Load the "transfer" dictionary
         transfer_dict = data[0]["transfer"]
-        # Initialize the matrix
-        num_tasks = len(transfer_dict)
         
         matrix = np.zeros((num_tasks, num_tasks))
         # Populate the matrix
@@ -420,7 +482,7 @@ if __name__ == "__main__":
             viz_heatmap(matrix, "Transfer", "Target Task", "Source Task", os.path.join(directory, "transfer_matrix.pdf"))
         
         if args.transfer_line: 
-            viz_lineplots(matrix, "Transfer", "Target Task", "Test Accuracy", os.path.join(directory, "transfer_line.pdf"), lbl_names="Task")
+            viz_lineplots(matrix.T, "Transfer", "Target Task", "Test Accuracy", os.path.join(directory, "transfer_line.pdf"), lbl_names="Task")
 
     all_minima = []
     # adding initialization if present
@@ -451,19 +513,24 @@ if __name__ == "__main__":
         LMC_matrices = compute_LMC_all2all(all_minima[1:], agent, env, eval_criterion, line_samples=10, batches=batches_eval, return_type="loss") # (num_tasks, num_tasks, line_samples+1) matrix
         experiment_logger.log_matrix(LMC_matrices, f"LMC_all_tasks")
         # plot the LMC from the first task to all other tasks
-        experiment_logger.plot_lines(LMC_matrices[0,:,:], title=f"LMC Task 0", xaxis="Interpolation", yaxis=f"Validation Loss Task {l}", name=f"LMC_task_0", lbl_names=f"{l+1} -", ylim=(0.0,5.0))
+        experiment_logger.plot_lines(LMC_matrices[0,:,:], title=f"LMC Task 1", xaxis="Interpolation", yaxis=f"Validation Loss Task {1}", name=f"LMC_task_0", lbl_names=f"{1} -", ylim=(0.0,5.0))
 
     if args.hessian:    # Hessian computation
-        for i in range(num_tasks):
-            eigval, eigvec = get_Hessian_task(i, env, agent, all_minima[i+1], eval_criterion, N=128, K=10)
+        all_spectra = []
+        for i in range(1):
+            eigval, eigvec = get_Hessian_task(i, env, agent, all_minima[i+1], eval_criterion, N=128, K=100)
             experiment_logger.log_matrix(eigval, f"eigval_task_{i}")
             experiment_logger.log_matrix(eigvec, f"eigvec_task_{i}")
-            experiment_logger.plot_lines(eigval.reshape(-1, 1), title=f"Spectrum Task {i}", xaxis="Index", yaxis=f"Eigenvalue", name=f"Spectrum_task{l}", lbl_names="no")
+            all_spectra.append(eigval)
             # plotting eigval
             if i==0: 
-                all_alignments, random_alignments = compute_alignment_updates_spectra(0, all_minima[1:], eigvec, device)
+                all_alignments, random_alignments, norms = compute_alignment_updates_spectra_norm(0, all_minima[1:], eigvec, device)
                 # plotting alignments 
                 experiment_logger.plot_lines(all_alignments, title="Cosine Similarity of Task Displacement with Eigenvectors", xaxis="Eigenvector index", yaxis="Alignment", name="alignments", lbl_names="Displacement Task")
+                experiment_logger.log_matrix(norms, "task0_displacement_norms")
+
+        # all_spectra_matrix = np.vstack(all_spectra)
+        # experiment_logger.plot_lines(all_spectra_matrix, title=f"Hessian Spectra of Task", xaxis="Index", yaxis=f"Eigenvalue", name=f"Hessian_Spectra", lbl_names="Task")
 
 
     print("Evaluation completed.")
